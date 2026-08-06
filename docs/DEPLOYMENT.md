@@ -1,6 +1,6 @@
 # Scouty 프로덕션 배포
 
-Scouty는 자동 CD를 운영하지 않는다. GitHub Actions는 PR의 `CI` 검사만 수행하고 production 배포는 운영자가 로컬에서 Wrangler로 명시적으로 실행한다.
+Scouty는 자동 CD를 운영하지 않는다. GitHub Actions는 PR과 `codex/**` 기능 브랜치의 `CI` 검사만 수행하고 production 배포는 운영자가 로컬에서 Wrangler로 명시적으로 실행한다.
 
 자동·수동 배포 모두 `db:seed`를 포함하지 않는다. 역할 seed는 최초 PostgreSQL 구성 또는 운영 역할 변경 시에만 별도로 실행한다.
 

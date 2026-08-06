@@ -162,7 +162,7 @@ bun install
 - MVP 배포 환경은 production 하나만 운영한다.
 - DB migration은 API 배포 전에 호환 가능한 순서로 적용한다.
 - 배포 과정에서 원격 D1·R2·PostgreSQL 데이터를 자동 초기화하지 않는다.
-- CI는 PR에서 lint, typecheck, 단위·통합·E2E 테스트, production build, Container build를 검증한다.
+- CI는 PR과 `codex/**` 기능 브랜치에서 lint, typecheck, 단위·통합·E2E 테스트, production build, Container build를 검증하며 필요하면 수동으로 재실행할 수 있다.
 - production은 운영자가 로컬 Wrangler로 명시적으로 배포하며 배포 과정에서 seed를 실행하지 않는다. 운영 역할 변경은 별도 수동 작업으로 수행한다.
 - 세부 순서와 필수 secret은 [프로덕션 배포](./DEPLOYMENT.md)를 따른다.
 
