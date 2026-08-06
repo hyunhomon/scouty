@@ -8,6 +8,7 @@ import {
   ScoutRequestStatus as DatabaseScoutRequestStatus,
   ScoutStatus as DatabaseScoutStatus,
   NotificationType,
+  PortfolioReplacementStatus,
   PortfolioStatus,
   Prisma,
   ReportStatus,
@@ -17,6 +18,7 @@ import {
 import {
   ApiError,
   type ChatMessage,
+  type ChatMessagePage,
   type ChatRoomSummary,
   type CompletePortfolioProcessingInput,
   type CoreService,
@@ -31,6 +33,7 @@ import {
   normalizeTags,
   type PortfolioSummary,
   type PortfolioUploadTicket,
+  type ProductEvent,
   type ProfileSummary,
   type PublicProfile,
   type ReportTargetType,
@@ -39,6 +42,7 @@ import {
   type ScoutRequestSummary,
   type ScoutStatus,
   type SessionUser,
+  type UnreadCounts,
   type UpdateProfileInput,
 } from "./core"
 import { createRandomToken, sha256 } from "./security"
@@ -49,12 +53,18 @@ type CoreDependencies = {
   database: ScoutyPrismaClient
   edgeDatabase: D1Database
   processingQueue: Queue<{ portfolioId: string; requestedAt: string }>
+  track?: ((event: ProductEvent) => void) | undefined
   processor?:
     | {
+        inspectVideo(input: {
+          portfolioId: string
+          videoUrl: string
+        }): Promise<{ durationSeconds: number }>
         process(input: {
           outputPrefix: string
           pdfUrl: string
           portfolioId: string
+          videoUrl?: string
         }): Promise<CompletePortfolioProcessingInput>
       }
     | undefined
@@ -80,8 +90,11 @@ const profileInclude = {
 } satisfies Prisma.UserProfileInclude
 
 const portfolioInclude = {
+  replacementPdfAsset: true,
+  replacementVideoAsset: true,
   roles: { include: { role: true } },
   tags: { include: { tag: true } },
+  videoAsset: true,
 } satisfies Prisma.PortfolioInclude
 
 function scoutStatus(value: DatabaseScoutStatus): ScoutStatus {
@@ -102,12 +115,19 @@ function messageType(value: ChatMessageType): ChatMessage["type"] {
 
 function mapPortfolio(portfolio: Prisma.PortfolioGetPayload<{ include: typeof portfolioInclude }>) {
   return {
+    hasPendingVideoReplacement: Boolean(portfolio.replacementVideoAssetId),
+    hasVideo: portfolio.videoAsset?.status === AssetStatus.READY,
     id: portfolio.id,
     publishedAt: portfolio.publishedAt?.toISOString() ?? null,
+    replacementErrorCode: portfolio.replacementErrorCode,
+    replacementStatus: portfolio.replacementStatus
+      ? (portfolio.replacementStatus.toLowerCase() as "failed" | "processing" | "uploading")
+      : null,
     roles: portfolio.roles.map(({ role }) => ({ name: role.name, slug: role.slug })),
     status: portfolioStatus(portfolio.status),
     tags: portfolio.tags.map(({ tag }) => tag.name),
     title: portfolio.title,
+    videoErrorCode: portfolio.videoProcessingErrorCode,
   } satisfies PortfolioSummary
 }
 
@@ -153,6 +173,29 @@ function prismaCode(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError ? error.code : null
 }
 
+type ChatCursor = { createdAt: string; id: string }
+
+function encodeChatCursor(cursor: ChatCursor) {
+  return btoa(JSON.stringify(cursor))
+}
+
+function decodeChatCursor(value: string): ChatCursor {
+  try {
+    const parsed = JSON.parse(atob(value)) as Partial<ChatCursor>
+    if (
+      typeof parsed.createdAt !== "string" ||
+      !Number.isFinite(new Date(parsed.createdAt).getTime()) ||
+      typeof parsed.id !== "string" ||
+      !/^[0-9a-f-]{36}$/i.test(parsed.id)
+    ) {
+      throw new Error("invalid cursor")
+    }
+    return { createdAt: parsed.createdAt, id: parsed.id }
+  } catch {
+    throw new ApiError(400, "INVALID_CHAT_CURSOR", "채팅 동기화 위치가 올바르지 않아요.")
+  }
+}
+
 function staggerCandidates(candidates: ScoutCandidate[]) {
   const remaining = [...candidates]
   const staggered: ScoutCandidate[] = []
@@ -172,6 +215,18 @@ function staggerCandidates(candidates: ScoutCandidate[]) {
 export class PrismaCoreService implements CoreService {
   constructor(private readonly dependencies: CoreDependencies) {}
 
+  private track(event: ProductEvent) {
+    try {
+      this.dependencies.track?.(event)
+    } catch {
+      // Product analytics must never block a user action.
+    }
+  }
+
+  async trackProductEvent(event: ProductEvent) {
+    this.track(event)
+  }
+
   private async assertFileSignature(storageKey: string, mimeType: string) {
     const object = await this.dependencies.assets.get(storageKey, {
       range: { length: 16, offset: 0 },
@@ -184,20 +239,55 @@ export class PrismaCoreService implements CoreService {
   }
 
   async signInWithOAuth(input: { email: string | null; provider: "google"; subject: string }) {
-    const user = await this.dependencies.database.user.upsert({
-      where: {
-        authProvider_authSubject: { authProvider: input.provider, authSubject: input.subject },
-      },
-      update: { email: input.email, status: UserStatus.ACTIVE },
-      create: {
-        authProvider: input.provider,
-        authSubject: input.subject,
-        email: input.email,
-        profile: { create: {} },
-        scoutStats: { create: {} },
-      },
-      include: { profile: true },
+    const identity = { authProvider: input.provider, authSubject: input.subject }
+    let existing = await this.dependencies.database.user.findUnique({
+      where: { authProvider_authSubject: identity },
     })
+    if (existing?.status === UserStatus.DELETED) {
+      throw new ApiError(403, "ACCOUNT_DELETED", "삭제된 계정이에요.")
+    }
+    if (existing?.status === UserStatus.SUSPENDED) {
+      throw new ApiError(403, "ACCOUNT_SUSPENDED", "이 계정은 현재 사용할 수 없어요.")
+    }
+    let isNewUser = false
+    let user: Prisma.UserGetPayload<{ include: { profile: true } }>
+    if (existing) {
+      user = await this.dependencies.database.user.update({
+        where: { id: existing.id },
+        data: { email: input.email },
+        include: { profile: true },
+      })
+    } else {
+      try {
+        user = await this.dependencies.database.user.create({
+          data: {
+            ...identity,
+            email: input.email,
+            profile: { create: {} },
+            scoutStats: { create: {} },
+          },
+          include: { profile: true },
+        })
+        isNewUser = true
+      } catch (error) {
+        if (prismaCode(error) !== "P2002") throw error
+        existing = await this.dependencies.database.user.findUnique({
+          where: { authProvider_authSubject: identity },
+        })
+        if (!existing) throw error
+        if (existing.status === UserStatus.DELETED) {
+          throw new ApiError(403, "ACCOUNT_DELETED", "삭제된 계정이에요.")
+        }
+        if (existing.status === UserStatus.SUSPENDED) {
+          throw new ApiError(403, "ACCOUNT_SUSPENDED", "이 계정은 현재 사용할 수 없어요.")
+        }
+        user = await this.dependencies.database.user.update({
+          where: { id: existing.id },
+          data: { email: input.email },
+          include: { profile: true },
+        })
+      }
+    }
 
     if (!user.profile) {
       await this.dependencies.database.userProfile.create({ data: { userId: user.id } })
@@ -207,6 +297,7 @@ export class PrismaCoreService implements CoreService {
       update: {},
       create: { userId: user.id },
     })
+    if (isNewUser) this.track("signed_up")
 
     return {
       email: user.email,
@@ -256,6 +347,101 @@ export class PrismaCoreService implements CoreService {
     })
   }
 
+  async deleteAccount(userId: string) {
+    const deletedAt = new Date()
+    const user = await this.dependencies.database.user.findFirst({
+      where: { id: userId, status: UserStatus.ACTIVE },
+      select: { id: true },
+    })
+    if (!user) throw new ApiError(404, "USER_NOT_FOUND", "계정을 찾을 수 없어요.")
+    await this.dependencies.edgeDatabase
+      .prepare("DELETE FROM discovery_portfolios WHERE author_id = ?")
+      .bind(userId)
+      .run()
+    await this.dependencies.database.$transaction(async (transaction) => {
+      await transaction.scoutRequest.updateMany({
+        where: {
+          status: DatabaseScoutRequestStatus.PENDING,
+          OR: [{ recipientId: userId }, { senderId: userId }],
+        },
+        data: { canceledAt: deletedAt, status: DatabaseScoutRequestStatus.CANCELED },
+      })
+      await transaction.scoutRequest.updateMany({
+        where: { senderId: userId },
+        data: {
+          estimatedPeriodText: "삭제된 계정",
+          message: "삭제된 메시지",
+          projectSummary: "삭제된 계정이 보낸 제안입니다.",
+          projectTitle: "삭제된 계정의 제안",
+          teamCompositionText: "삭제된 계정",
+          weeklyCommitmentText: "삭제된 계정",
+        },
+      })
+      await transaction.chatMessage.updateMany({
+        where: { senderId: userId },
+        data: { assetId: null, body: null, deletedAt },
+      })
+      await transaction.report.updateMany({
+        where: { reporterId: userId },
+        data: { description: null },
+      })
+      await transaction.portfolio.updateMany({
+        where: { authorId: userId },
+        data: { status: PortfolioStatus.ARCHIVED },
+      })
+      await transaction.asset.updateMany({
+        where: { ownerId: userId },
+        data: { status: AssetStatus.DELETED },
+      })
+      await transaction.userProfile.updateMany({
+        where: { userId },
+        data: {
+          avatarAssetId: null,
+          bio: null,
+          communicationPreference: null,
+          handle: null,
+          nickname: null,
+          profileCompletedAt: null,
+          scoutStatus: DatabaseScoutStatus.CLOSED,
+        },
+      })
+      await transaction.portfolioBookmark.deleteMany({ where: { userId } })
+      await transaction.userRole.deleteMany({ where: { userId } })
+      await transaction.userBlock.deleteMany({
+        where: { OR: [{ blockedId: userId }, { blockerId: userId }] },
+      })
+      await transaction.notification.deleteMany({ where: { userId } })
+      await transaction.session.deleteMany({ where: { userId } })
+      await transaction.user.update({
+        where: { id: userId },
+        data: {
+          authSubject: `deleted:${userId}:${crypto.randomUUID()}`,
+          deletedAt,
+          email: null,
+          status: UserStatus.DELETED,
+        },
+      })
+    })
+    await this.purgeDeletedAssets().catch(() => undefined)
+    this.track("account_deleted")
+  }
+
+  async purgeDeletedAssets() {
+    const assets = await this.dependencies.database.asset.findMany({
+      where: { purgedAt: null, status: AssetStatus.DELETED },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, storageKey: true },
+      take: 500,
+    })
+    if (assets.length > 0) {
+      await this.dependencies.assets.delete(assets.map((asset) => asset.storageKey))
+      await this.dependencies.database.asset.updateMany({
+        where: { id: { in: assets.map((asset) => asset.id) } },
+        data: { purgedAt: new Date() },
+      })
+    }
+  }
+
   async getMe(userId: string) {
     const profile = await this.dependencies.database.userProfile.findUnique({
       where: { userId },
@@ -284,9 +470,11 @@ export class PrismaCoreService implements CoreService {
       throw new ApiError(400, "INVALID_ROLES", "역할은 1~3개 선택해주세요.")
     }
 
+    let completedForFirstTime = false
     try {
       await this.dependencies.database.$transaction(async (transaction) => {
         const currentProfile = await transaction.userProfile.findUnique({ where: { userId } })
+        completedForFirstTime = !currentProfile?.profileCompletedAt
         const avatarAssetId =
           input.avatarAssetId === undefined ? currentProfile?.avatarAssetId : input.avatarAssetId
         if (!avatarAssetId) {
@@ -349,7 +537,6 @@ export class PrismaCoreService implements CoreService {
       }
       throw error
     }
-
     const publishedPortfolios = await this.dependencies.database.portfolio.findMany({
       where: { authorId: userId, status: PortfolioStatus.PUBLISHED },
       select: { id: true },
@@ -358,6 +545,7 @@ export class PrismaCoreService implements CoreService {
 
     const profile = await this.getMe(userId)
     if (!profile) throw new ApiError(503, "PROFILE_WRITE_FAILED", "프로필을 저장하지 못했어요.")
+    if (completedForFirstTime) this.track("profile_completed")
     return profile
   }
 
@@ -461,7 +649,8 @@ export class PrismaCoreService implements CoreService {
       input.video &&
       (input.video.byteSize < 1 ||
         input.video.byteSize > 200 * 1024 * 1024 ||
-        (input.video.durationSeconds && input.video.durationSeconds > 180))
+        input.video.durationSeconds < 1 ||
+        input.video.durationSeconds > 180)
     ) {
       throw new ApiError(400, "INVALID_VIDEO", "영상은 최대 200MB, 3분까지 올릴 수 있어요.")
     }
@@ -548,7 +737,302 @@ export class PrismaCoreService implements CoreService {
         url: videoUpload.url,
       })
     }
+    this.track("portfolio_upload_started")
     return { expiresAt: expiresAt.toISOString(), portfolioId, uploads }
+  }
+
+  async createPortfolioPdfReplacement(
+    userId: string,
+    portfolioId: string,
+    input: { byteSize: number; mimeType: "application/pdf" },
+  ) {
+    if (input.byteSize < 1 || input.byteSize > 50 * 1024 * 1024) {
+      throw new ApiError(400, "INVALID_PDF_SIZE", "PDF는 최대 50MB까지 올릴 수 있어요.")
+    }
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: {
+        authorId: userId,
+        id: portfolioId,
+        status: { in: [PortfolioStatus.PUBLISHED, PortfolioStatus.ARCHIVED] },
+      },
+    })
+    if (!portfolio) {
+      throw new ApiError(404, "PORTFOLIO_NOT_FOUND", "게시된 프로젝트를 찾을 수 없어요.")
+    }
+    if (portfolio.replacementPdfAssetId) {
+      throw new ApiError(409, "REPLACEMENT_IN_PROGRESS", "이미 새 PDF를 처리하고 있어요.")
+    }
+
+    const assetId = crypto.randomUUID()
+    const storageKey = `users/${userId}/portfolios/${portfolioId}/replacements/${assetId}/source.pdf`
+    const upload = await this.dependencies.signer.signPut(storageKey, input.mimeType)
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.asset.create({
+        data: {
+          byteSize: BigInt(input.byteSize),
+          id: assetId,
+          kind: AssetKind.PORTFOLIO_PDF,
+          mimeType: input.mimeType,
+          ownerId: userId,
+          storageKey,
+        },
+      }),
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementErrorCode: null,
+          replacementPdfAssetId: assetId,
+          replacementStatus: PortfolioReplacementStatus.UPLOADING,
+        },
+      }),
+    ])
+    return {
+      assetId,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      headers: upload.headers,
+      url: upload.url,
+    }
+  }
+
+  async confirmPortfolioPdfReplacement(userId: string, portfolioId: string, assetId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: {
+        authorId: userId,
+        id: portfolioId,
+        replacementPdfAssetId: assetId,
+        replacementStatus: PortfolioReplacementStatus.UPLOADING,
+      },
+      include: { replacementPdfAsset: true },
+    })
+    const asset = portfolio?.replacementPdfAsset
+    if (!portfolio || !asset) {
+      throw new ApiError(404, "REPLACEMENT_NOT_FOUND", "PDF 교체 정보를 찾을 수 없어요.")
+    }
+    const object = await this.dependencies.assets.head(asset.storageKey)
+    if (!object || object.size !== Number(asset.byteSize)) {
+      throw new ApiError(409, "UPLOAD_INCOMPLETE", "새 PDF 업로드가 완료되지 않았어요.")
+    }
+    await this.assertFileSignature(asset.storageKey, asset.mimeType)
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.asset.update({
+        where: { id: asset.id },
+        data: { status: AssetStatus.READY },
+      }),
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementErrorCode: null,
+          replacementStatus: PortfolioReplacementStatus.PROCESSING,
+        },
+      }),
+    ])
+    await this.dependencies.processingQueue.send({
+      portfolioId,
+      requestedAt: new Date().toISOString(),
+    })
+  }
+
+  async cancelPortfolioPdfReplacement(userId: string, portfolioId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: { authorId: userId, id: portfolioId },
+      select: { replacementPdfAssetId: true, replacementStatus: true },
+    })
+    if (!portfolio?.replacementPdfAssetId) {
+      throw new ApiError(404, "REPLACEMENT_NOT_FOUND", "취소할 PDF 교체 작업이 없어요.")
+    }
+    if (portfolio.replacementStatus === PortfolioReplacementStatus.PROCESSING) {
+      throw new ApiError(409, "REPLACEMENT_PROCESSING", "PDF 처리 중에는 교체를 취소할 수 없어요.")
+    }
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementErrorCode: null,
+          replacementPdfAssetId: null,
+          replacementStatus: null,
+        },
+      }),
+      this.dependencies.database.asset.update({
+        where: { id: portfolio.replacementPdfAssetId },
+        data: { status: AssetStatus.DELETED },
+      }),
+    ])
+  }
+
+  async createPortfolioVideoReplacement(
+    userId: string,
+    portfolioId: string,
+    input: {
+      byteSize: number
+      durationSeconds: number
+      mimeType: "video/mp4" | "video/quicktime" | "video/webm"
+    },
+  ) {
+    if (
+      input.byteSize < 1 ||
+      input.byteSize > 200 * 1024 * 1024 ||
+      input.durationSeconds < 1 ||
+      input.durationSeconds > 180
+    ) {
+      throw new ApiError(400, "INVALID_VIDEO", "영상은 최대 200MB, 3분까지 올릴 수 있어요.")
+    }
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: {
+        authorId: userId,
+        id: portfolioId,
+        status: { in: [PortfolioStatus.PUBLISHED, PortfolioStatus.ARCHIVED] },
+      },
+    })
+    if (!portfolio) throw new ApiError(404, "PORTFOLIO_NOT_FOUND", "프로젝트를 찾을 수 없어요.")
+    if (portfolio.replacementVideoAssetId) {
+      throw new ApiError(409, "VIDEO_REPLACEMENT_IN_PROGRESS", "이미 새 영상을 올리고 있어요.")
+    }
+
+    const assetId = crypto.randomUUID()
+    const extension =
+      input.mimeType === "video/webm"
+        ? "webm"
+        : input.mimeType === "video/quicktime"
+          ? "mov"
+          : "mp4"
+    const storageKey = `users/${userId}/portfolios/${portfolioId}/replacements/${assetId}/video.${extension}`
+    const upload = await this.dependencies.signer.signPut(storageKey, input.mimeType)
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.asset.create({
+        data: {
+          byteSize: BigInt(input.byteSize),
+          durationSeconds: Math.ceil(input.durationSeconds),
+          id: assetId,
+          kind: AssetKind.PORTFOLIO_VIDEO,
+          mimeType: input.mimeType,
+          ownerId: userId,
+          storageKey,
+        },
+      }),
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: { replacementVideoAssetId: assetId, videoProcessingErrorCode: null },
+      }),
+    ])
+    return {
+      assetId,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      headers: upload.headers,
+      url: upload.url,
+    }
+  }
+
+  async confirmPortfolioVideoReplacement(userId: string, portfolioId: string, assetId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: { authorId: userId, id: portfolioId, replacementVideoAssetId: assetId },
+      include: { replacementVideoAsset: true },
+    })
+    const asset = portfolio?.replacementVideoAsset
+    if (!portfolio || !asset) {
+      throw new ApiError(404, "VIDEO_REPLACEMENT_NOT_FOUND", "영상 교체 정보를 찾을 수 없어요.")
+    }
+    const object = await this.dependencies.assets.head(asset.storageKey)
+    if (!object || object.size !== Number(asset.byteSize)) {
+      throw new ApiError(409, "UPLOAD_INCOMPLETE", "새 영상 업로드가 완료되지 않았어요.")
+    }
+    await this.assertFileSignature(asset.storageKey, asset.mimeType)
+    const processor = this.dependencies.processor
+    if (!processor) {
+      throw new ApiError(503, "PROCESSOR_NOT_CONFIGURED", "영상 처리기를 사용할 수 없어요.")
+    }
+    let durationSeconds: number
+    try {
+      const videoUrl = await this.dependencies.signer.signGet(asset.storageKey)
+      durationSeconds = (await processor.inspectVideo({ portfolioId, videoUrl })).durationSeconds
+    } catch {
+      await this.dependencies.database.$transaction([
+        this.dependencies.database.asset.update({
+          where: { id: asset.id },
+          data: { status: AssetStatus.FAILED },
+        }),
+        this.dependencies.database.portfolio.update({
+          where: { id: portfolioId },
+          data: {
+            replacementVideoAssetId: null,
+            videoProcessingErrorCode: "VIDEO_VALIDATION_FAILED",
+          },
+        }),
+      ])
+      throw new ApiError(415, "VIDEO_VALIDATION_FAILED", "영상 길이 또는 형식을 확인해 주세요.")
+    }
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.asset.update({
+        where: { id: asset.id },
+        data: { durationSeconds, status: AssetStatus.READY },
+      }),
+      ...(portfolio.videoAssetId && portfolio.videoAssetId !== asset.id
+        ? [
+            this.dependencies.database.asset.update({
+              where: { id: portfolio.videoAssetId },
+              data: { status: AssetStatus.DELETED },
+            }),
+          ]
+        : []),
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementVideoAssetId: null,
+          videoAssetId: asset.id,
+          videoProcessingErrorCode: null,
+        },
+      }),
+    ])
+    if (portfolio.status === PortfolioStatus.PUBLISHED) await this.projectPortfolio(portfolioId)
+  }
+
+  async cancelPortfolioVideoReplacement(userId: string, portfolioId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: { authorId: userId, id: portfolioId },
+      select: { replacementVideoAssetId: true },
+    })
+    if (!portfolio?.replacementVideoAssetId) {
+      throw new ApiError(404, "VIDEO_REPLACEMENT_NOT_FOUND", "취소할 영상 교체 작업이 없어요.")
+    }
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: { replacementVideoAssetId: null },
+      }),
+      this.dependencies.database.asset.update({
+        where: { id: portfolio.replacementVideoAssetId },
+        data: { status: AssetStatus.DELETED },
+      }),
+    ])
+  }
+
+  async removePortfolioVideo(userId: string, portfolioId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: { authorId: userId, id: portfolioId },
+      select: { replacementVideoAssetId: true, status: true, videoAssetId: true },
+    })
+    if (!portfolio) throw new ApiError(404, "PORTFOLIO_NOT_FOUND", "프로젝트를 찾을 수 없어요.")
+    const removedAssetIds = [portfolio.videoAssetId, portfolio.replacementVideoAssetId].filter(
+      (id): id is string => Boolean(id),
+    )
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementVideoAssetId: null,
+          videoAssetId: null,
+          videoProcessingErrorCode: null,
+        },
+      }),
+      ...(removedAssetIds.length > 0
+        ? [
+            this.dependencies.database.asset.updateMany({
+              where: { id: { in: removedAssetIds } },
+              data: { status: AssetStatus.DELETED },
+            }),
+          ]
+        : []),
+    ])
+    if (portfolio.status === PortfolioStatus.PUBLISHED) await this.projectPortfolio(portfolioId)
   }
 
   async confirmPortfolioUpload(userId: string, portfolioId: string) {
@@ -581,14 +1065,6 @@ export class PrismaCoreService implements CoreService {
         where: { id: portfolio.pdfAssetId },
         data: { status: AssetStatus.READY },
       }),
-      ...(portfolio.videoAssetId
-        ? [
-            this.dependencies.database.asset.update({
-              where: { id: portfolio.videoAssetId },
-              data: { status: AssetStatus.READY },
-            }),
-          ]
-        : []),
       this.dependencies.database.portfolio.update({
         where: { id: portfolio.id },
         data: { processingErrorCode: null, status: PortfolioStatus.PROCESSING },
@@ -605,7 +1081,11 @@ export class PrismaCoreService implements CoreService {
       input.pageCount < 1 ||
       input.pageCount > 50 ||
       input.pages.length !== input.pageCount ||
-      input.pages.some((page, index) => page.pageNumber !== index + 1)
+      input.pages.some((page, index) => page.pageNumber !== index + 1) ||
+      (input.video?.status === "ready" &&
+        (!Number.isFinite(input.video.durationSeconds) ||
+          input.video.durationSeconds < 1 ||
+          input.video.durationSeconds > 180))
     ) {
       throw new ApiError(400, "INVALID_PROCESSED_PAGES", "변환된 페이지 정보가 올바르지 않아요.")
     }
@@ -613,11 +1093,24 @@ export class PrismaCoreService implements CoreService {
     const portfolio = await this.dependencies.database.portfolio.findUnique({
       where: { id: portfolioId },
     })
-    if (!portfolio || portfolio.status !== PortfolioStatus.PROCESSING) {
+    const isReplacement = Boolean(
+      portfolio?.replacementPdfAssetId &&
+        portfolio.replacementStatus === PortfolioReplacementStatus.PROCESSING,
+    )
+    if (!portfolio || (portfolio.status !== PortfolioStatus.PROCESSING && !isReplacement)) {
       throw new ApiError(409, "PORTFOLIO_NOT_PROCESSING", "처리 중인 프로젝트가 아니에요.")
     }
+    const videoResult = portfolio.videoAssetId
+      ? (input.video ?? { errorCode: "VIDEO_VALIDATION_FAILED", status: "failed" as const })
+      : undefined
 
     await this.dependencies.database.$transaction(async (transaction) => {
+      const previousPages = isReplacement
+        ? await transaction.portfolioPage.findMany({
+            where: { portfolioId },
+            select: { imageAssetId: true, thumbnailAssetId: true },
+          })
+        : []
       await transaction.portfolioPage.deleteMany({ where: { portfolioId } })
       for (const page of input.pages) {
         const image = await transaction.asset.create({
@@ -655,14 +1148,46 @@ export class PrismaCoreService implements CoreService {
           },
         })
       }
+      if (!isReplacement && portfolio.videoAssetId && videoResult) {
+        await transaction.asset.update({
+          where: { id: portfolio.videoAssetId },
+          data:
+            videoResult.status === "ready"
+              ? {
+                  durationSeconds: Math.ceil(videoResult.durationSeconds),
+                  status: AssetStatus.READY,
+                }
+              : { status: AssetStatus.FAILED },
+        })
+      }
       await transaction.portfolio.update({
         where: { id: portfolioId },
-        data: {
-          pageCount: input.pageCount,
-          publishedAt: new Date(),
-          status: PortfolioStatus.PUBLISHED,
-        },
+        data: isReplacement
+          ? {
+              pageCount: input.pageCount,
+              pdfAssetId: portfolio.replacementPdfAssetId ?? portfolio.pdfAssetId,
+              replacementErrorCode: null,
+              replacementPdfAssetId: null,
+              replacementStatus: null,
+            }
+          : {
+              pageCount: input.pageCount,
+              processingErrorCode: null,
+              status: PortfolioStatus.READY,
+              videoProcessingErrorCode:
+                videoResult?.status === "failed" ? videoResult.errorCode : null,
+            },
       })
+      if (isReplacement) {
+        const replacedAssetIds = [
+          portfolio.pdfAssetId,
+          ...previousPages.flatMap((page) => [page.imageAssetId, page.thumbnailAssetId]),
+        ]
+        await transaction.asset.updateMany({
+          where: { id: { in: replacedAssetIds } },
+          data: { status: AssetStatus.DELETED },
+        })
+      }
       await transaction.notification.create({
         data: {
           entityId: portfolioId,
@@ -672,7 +1197,10 @@ export class PrismaCoreService implements CoreService {
         },
       })
     })
-    await this.projectPortfolio(portfolioId)
+    if (isReplacement && portfolio.status === PortfolioStatus.PUBLISHED) {
+      await this.projectPortfolio(portfolioId)
+    }
+    this.track("portfolio_processing_succeeded")
   }
 
   async publishPortfolio(userId: string, portfolioId: string) {
@@ -684,20 +1212,45 @@ export class PrismaCoreService implements CoreService {
     if (!portfolio.pageCount || portfolio._count.pages !== portfolio.pageCount) {
       throw new ApiError(409, "PORTFOLIO_NOT_READY", "페이지 처리가 끝난 뒤 게시할 수 있어요.")
     }
+    if (
+      portfolio.status !== PortfolioStatus.READY &&
+      portfolio.status !== PortfolioStatus.ARCHIVED
+    ) {
+      throw new ApiError(409, "PORTFOLIO_NOT_READY", "게시할 수 있는 프로젝트가 아니에요.")
+    }
     await this.dependencies.database.portfolio.update({
       where: { id: portfolioId },
-      data: { publishedAt: portfolio.publishedAt ?? new Date(), status: PortfolioStatus.PUBLISHED },
+      data: { publishedAt: new Date(), status: PortfolioStatus.PUBLISHED },
     })
     await this.projectPortfolio(portfolioId)
+    this.track("portfolio_published")
   }
 
   async retryPortfolio(userId: string, portfolioId: string) {
-    const result = await this.dependencies.database.portfolio.updateMany({
+    const initial = await this.dependencies.database.portfolio.updateMany({
       where: { authorId: userId, id: portfolioId, status: PortfolioStatus.FAILED },
       data: { processingErrorCode: null, status: PortfolioStatus.PROCESSING },
     })
-    if (result.count === 0) {
-      throw new ApiError(409, "PORTFOLIO_NOT_RETRYABLE", "다시 처리할 수 있는 프로젝트가 아니에요.")
+    if (initial.count === 0) {
+      const replacement = await this.dependencies.database.portfolio.updateMany({
+        where: {
+          authorId: userId,
+          id: portfolioId,
+          replacementPdfAssetId: { not: null },
+          replacementStatus: PortfolioReplacementStatus.FAILED,
+        },
+        data: {
+          replacementErrorCode: null,
+          replacementStatus: PortfolioReplacementStatus.PROCESSING,
+        },
+      })
+      if (replacement.count === 0) {
+        throw new ApiError(
+          409,
+          "PORTFOLIO_NOT_RETRYABLE",
+          "다시 처리할 수 있는 프로젝트가 아니에요.",
+        )
+      }
     }
     await this.dependencies.processingQueue.send({
       portfolioId,
@@ -823,11 +1376,13 @@ export class PrismaCoreService implements CoreService {
         update: {},
         create: { portfolioId, userId },
       })
+      this.track("bookmark_added")
       return
     }
     await this.dependencies.database.portfolioBookmark.deleteMany({
       where: { portfolioId, userId },
     })
+    this.track("bookmark_removed")
   }
 
   async listBookmarks(userId: string) {
@@ -986,6 +1541,7 @@ export class PrismaCoreService implements CoreService {
             projectTitle: input.projectTitle.trim(),
             recipientId: source.authorId,
             requestedRoleId: requestedRole.id,
+            senderReadAt: new Date(),
             senderId: userId,
             sourcePortfolioId: source.id,
             sourcePortfolioTitleSnapshot: source.title,
@@ -1009,6 +1565,7 @@ export class PrismaCoreService implements CoreService {
             userId: source.authorId,
           },
         })
+        this.track("scout_sent")
         return { id: request.id }
       })
     } catch (error) {
@@ -1017,6 +1574,58 @@ export class PrismaCoreService implements CoreService {
       }
       throw error
     }
+  }
+
+  async getUnreadCounts(userId: string) {
+    const [requests, rooms] = await Promise.all([
+      this.dependencies.database.scoutRequest.count({
+        where: {
+          OR: [
+            { recipientId: userId, recipientReadAt: null },
+            { senderId: userId, senderReadAt: null },
+          ],
+        },
+      }),
+      this.dependencies.database.chatRoom.findMany({
+        where: {
+          scoutRequest: {
+            status: DatabaseScoutRequestStatus.ACCEPTED,
+            OR: [{ recipientId: userId }, { senderId: userId }],
+          },
+        },
+        include: {
+          readStates: {
+            where: { userId },
+            include: { lastReadMessage: true },
+            take: 1,
+          },
+        },
+      }),
+    ])
+    const chatCounts = await Promise.all(
+      rooms.map((room) => {
+        const lastRead = room.readStates[0]?.lastReadMessage
+        return this.dependencies.database.chatMessage.count({
+          where: {
+            deletedAt: null,
+            roomId: room.id,
+            senderId: { not: userId },
+            ...(lastRead
+              ? {
+                  OR: [
+                    { createdAt: { gt: lastRead.createdAt } },
+                    { createdAt: lastRead.createdAt, id: { gt: lastRead.id } },
+                  ],
+                }
+              : { createdAt: { gt: room.createdAt } }),
+          },
+        })
+      }),
+    )
+    return {
+      chat: chatCounts.reduce((total, count) => total + count, 0),
+      requests,
+    } satisfies UnreadCounts
   }
 
   async listScoutRequests(userId: string, direction: "received" | "sent") {
@@ -1030,14 +1639,16 @@ export class PrismaCoreService implements CoreService {
         sourcePortfolio: true,
       },
     })
-    return requests.flatMap((request) => {
+    const summaries = requests.flatMap((request) => {
       const other = direction === "received" ? request.sender : request.recipient
-      if (!other.profile?.handle || !other.profile.nickname) return []
+      const isDeleted = other.status !== UserStatus.ACTIVE
+      if (!isDeleted && (!other.profile?.handle || !other.profile.nickname)) return []
       return [
         {
           createdAt: request.createdAt.toISOString(),
           direction,
           id: request.id,
+          isUnread: direction === "received" ? !request.recipientReadAt : !request.senderReadAt,
           projectSummary: request.projectSummary,
           projectTitle: request.projectTitle,
           requestedRole: { name: request.requestedRole.name, slug: request.requestedRole.slug },
@@ -1047,13 +1658,22 @@ export class PrismaCoreService implements CoreService {
           },
           status: requestStatus(request.status),
           user: {
-            handle: other.profile.handle,
-            nickname: other.profile.nickname,
+            handle: other.profile?.handle ?? "",
+            isDeleted,
+            nickname: other.profile?.nickname ?? "삭제된 사용자",
             userId: other.id,
           },
         } satisfies ScoutRequestSummary,
       ]
     })
+    if (requests.length > 0) {
+      await this.dependencies.database.scoutRequest.updateMany({
+        where: { id: { in: requests.map((request) => request.id) } },
+        data:
+          direction === "received" ? { recipientReadAt: new Date() } : { senderReadAt: new Date() },
+      })
+    }
+    return summaries
   }
 
   async transitionScoutRequest(
@@ -1084,7 +1704,9 @@ export class PrismaCoreService implements CoreService {
         where: { id: scoutRequestId, status: DatabaseScoutRequestStatus.PENDING },
         data: {
           canceledAt: action === "cancel" ? new Date() : null,
+          recipientReadAt: isRecipientAction ? new Date() : null,
           respondedAt: isRecipientAction ? new Date() : null,
+          senderReadAt: action === "cancel" ? new Date() : null,
           status: nextStatus,
         },
       })
@@ -1154,6 +1776,13 @@ export class PrismaCoreService implements CoreService {
           },
         })
       }
+      this.track(
+        action === "accept"
+          ? "scout_accepted"
+          : action === "decline"
+            ? "scout_declined"
+            : "scout_canceled",
+      )
       return { chatRoomId, status: requestStatus(nextStatus) }
     })
   }
@@ -1168,8 +1797,12 @@ export class PrismaCoreService implements CoreService {
       },
       orderBy: { createdAt: "desc" },
       include: {
-        messages: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 },
-        readStates: { where: { userId }, take: 1 },
+        messages: {
+          where: { deletedAt: null },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          take: 1,
+        },
+        readStates: { where: { userId }, include: { lastReadMessage: true }, take: 1 },
         scoutRequest: {
           include: {
             mannerFeedback: { where: { fromUserId: userId }, take: 1 },
@@ -1184,18 +1817,29 @@ export class PrismaCoreService implements CoreService {
     for (const room of rooms) {
       const request = room.scoutRequest
       const other = request.senderId === userId ? request.recipient : request.sender
-      if (!other.profile?.handle || !other.profile.nickname) continue
+      const isDeleted = other.status !== UserStatus.ACTIVE
+      if (!isDeleted && (!other.profile?.handle || !other.profile.nickname)) continue
       const last = room.messages[0]
+      const lastRead = room.readStates[0]?.lastReadMessage
       const [unreadCount, participants, blocked] = await Promise.all([
         this.dependencies.database.chatMessage.count({
           where: {
-            createdAt: { gt: room.readStates[0]?.readAt ?? room.createdAt },
+            ...(lastRead
+              ? {
+                  OR: [
+                    { createdAt: { gt: lastRead.createdAt } },
+                    { createdAt: lastRead.createdAt, id: { gt: lastRead.id } },
+                  ],
+                }
+              : { createdAt: { gt: room.createdAt } }),
+            deletedAt: null,
             roomId: room.id,
             senderId: { not: userId },
           },
         }),
         this.dependencies.database.chatMessage.findMany({
           where: {
+            deletedAt: null,
             roomId: room.id,
             senderId: { not: null },
             type: { not: ChatMessageType.SYSTEM },
@@ -1216,11 +1860,13 @@ export class PrismaCoreService implements CoreService {
       const participantIds = new Set(participants.map(({ senderId }) => senderId))
       summaries.push({
         canReview:
+          !isDeleted &&
+          !blocked &&
           room.scoutRequest.mannerFeedback.length === 0 &&
           participantIds.has(request.senderId) &&
           participantIds.has(request.recipientId),
         id: room.id,
-        isReadOnly: Boolean(blocked),
+        isReadOnly: Boolean(blocked) || other.status !== UserStatus.ACTIVE,
         lastMessage: last
           ? {
               body: last.body,
@@ -1234,8 +1880,9 @@ export class PrismaCoreService implements CoreService {
           roleName: request.requestedRole.name,
         },
         user: {
-          handle: other.profile.handle,
-          nickname: other.profile.nickname,
+          handle: other.profile?.handle ?? "",
+          isDeleted,
+          nickname: other.profile?.nickname ?? "삭제된 사용자",
           userId: other.id,
         },
         unreadCount,
@@ -1244,29 +1891,58 @@ export class PrismaCoreService implements CoreService {
     return summaries
   }
 
-  async listChatMessages(userId: string, roomId: string) {
+  async listChatMessages(userId: string, roomId: string, after?: string) {
     await this.assertChatParticipant(userId, roomId)
-    const messages = await this.dependencies.database.chatMessage.findMany({
-      where: { deletedAt: null, roomId },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: 100,
+    const afterCursor = after ? decodeChatCursor(after) : null
+    const queried = await this.dependencies.database.chatMessage.findMany({
+      where: {
+        deletedAt: null,
+        roomId,
+        ...(afterCursor
+          ? {
+              OR: [
+                { createdAt: { gt: new Date(afterCursor.createdAt) } },
+                { createdAt: new Date(afterCursor.createdAt), id: { gt: afterCursor.id } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: afterCursor
+        ? [{ createdAt: "asc" }, { id: "asc" }]
+        : [{ createdAt: "desc" }, { id: "desc" }],
+      take: afterCursor ? 101 : 100,
     })
+    const hasMore = Boolean(afterCursor && queried.length > 100)
+    const messages = afterCursor ? queried.slice(0, 100) : queried.reverse()
     const lastMessage = messages.at(-1)
-    await this.dependencies.database.chatReadState.upsert({
-      where: { roomId_userId: { roomId, userId } },
-      update: { lastReadMessageId: lastMessage?.id ?? null, readAt: new Date() },
-      create: { lastReadMessageId: lastMessage?.id ?? null, readAt: new Date(), roomId, userId },
-    })
-    return messages.map((message) => ({
-      assetUrl: message.assetId
-        ? `${this.dependencies.apiOrigin}/v1/assets/${message.assetId}`
-        : null,
-      body: message.body,
-      createdAt: message.createdAt.toISOString(),
-      id: message.id,
-      isMine: message.senderId === userId,
-      type: messageType(message.type),
-    }))
+    if (lastMessage) {
+      await this.dependencies.database.chatReadState.upsert({
+        where: { roomId_userId: { roomId, userId } },
+        update: { lastReadMessageId: lastMessage.id, readAt: lastMessage.createdAt },
+        create: {
+          lastReadMessageId: lastMessage.id,
+          readAt: lastMessage.createdAt,
+          roomId,
+          userId,
+        },
+      })
+    }
+    return {
+      cursor: lastMessage
+        ? encodeChatCursor({ createdAt: lastMessage.createdAt.toISOString(), id: lastMessage.id })
+        : (after ?? null),
+      hasMore,
+      items: messages.map((message) => ({
+        assetUrl: message.assetId
+          ? `${this.dependencies.apiOrigin}/v1/assets/${message.assetId}`
+          : null,
+        body: message.body,
+        createdAt: message.createdAt.toISOString(),
+        id: message.id,
+        isMine: message.senderId === userId,
+        type: messageType(message.type),
+      })),
+    } satisfies ChatMessagePage
   }
 
   async sendChatMessage(
@@ -1278,6 +1954,12 @@ export class PrismaCoreService implements CoreService {
       throw new ApiError(400, "INVALID_MESSAGE", "메시지는 1~2,000자로 입력해주세요.")
     }
     const room = await this.assertChatParticipant(userId, roomId)
+    if (
+      room.scoutRequest.sender.status !== UserStatus.ACTIVE ||
+      room.scoutRequest.recipient.status !== UserStatus.ACTIVE
+    ) {
+      throw new ApiError(403, "CHAT_READ_ONLY", "삭제되거나 정지된 계정과는 대화할 수 없어요.")
+    }
     const blocked = await this.dependencies.database.userBlock.findFirst({
       where: {
         OR: [
@@ -1332,6 +2014,7 @@ export class PrismaCoreService implements CoreService {
     }
     await this.dependencies.notifyChat?.(roomId, message)
     await this.createMannerAvailabilityNotifications(room.scoutRequest.id)
+    this.track("chat_message_sent")
     return message
   }
 
@@ -1341,6 +2024,12 @@ export class PrismaCoreService implements CoreService {
     input: { byteSize: number; mimeType: "image/jpeg" | "image/png" | "image/webp" },
   ) {
     const room = await this.assertChatParticipant(userId, roomId)
+    if (
+      room.scoutRequest.sender.status !== UserStatus.ACTIVE ||
+      room.scoutRequest.recipient.status !== UserStatus.ACTIVE
+    ) {
+      throw new ApiError(403, "CHAT_READ_ONLY", "삭제되거나 정지된 계정과는 대화할 수 없어요.")
+    }
     const blocked = await this.dependencies.database.userBlock.findFirst({
       where: {
         OR: [
@@ -1383,6 +2072,12 @@ export class PrismaCoreService implements CoreService {
     input: { assetId: string; clientMessageId: string },
   ) {
     const room = await this.assertChatParticipant(userId, roomId)
+    if (
+      room.scoutRequest.sender.status !== UserStatus.ACTIVE ||
+      room.scoutRequest.recipient.status !== UserStatus.ACTIVE
+    ) {
+      throw new ApiError(403, "CHAT_READ_ONLY", "삭제되거나 정지된 계정과는 대화할 수 없어요.")
+    }
     const blocked = await this.dependencies.database.userBlock.findFirst({
       where: {
         OR: [
@@ -1448,6 +2143,7 @@ export class PrismaCoreService implements CoreService {
     }
     await this.dependencies.notifyChat?.(roomId, message)
     await this.createMannerAvailabilityNotifications(room.scoutRequest.id)
+    this.track("chat_message_sent")
     return message
   }
 
@@ -1540,11 +2236,17 @@ export class PrismaCoreService implements CoreService {
       await this.dependencies.database.$transaction(async (transaction) => {
         const request = await transaction.scoutRequest.findUnique({
           where: { id: scoutRequestId },
-          include: { chatRoom: { include: { messages: true } } },
+          include: {
+            chatRoom: { include: { messages: { where: { deletedAt: null } } } },
+            recipient: { select: { status: true } },
+            sender: { select: { status: true } },
+          },
         })
         if (
           !request ||
           request.status !== DatabaseScoutRequestStatus.ACCEPTED ||
+          request.sender.status !== UserStatus.ACTIVE ||
+          request.recipient.status !== UserStatus.ACTIVE ||
           (request.senderId !== userId && request.recipientId !== userId)
         ) {
           throw new ApiError(403, "MANNER_FORBIDDEN", "평가할 수 없는 관계예요.")
@@ -1596,6 +2298,7 @@ export class PrismaCoreService implements CoreService {
       }
       throw error
     }
+    this.track("manner_submitted")
   }
 
   async listNotifications(userId: string) {
@@ -1680,6 +2383,7 @@ export class PrismaCoreService implements CoreService {
         targetType: mapReportTarget(input.targetType),
       },
     })
+    this.track("report_submitted")
     return { id: report.id }
   }
 
@@ -1723,26 +2427,68 @@ export class PrismaCoreService implements CoreService {
     const processor = this.dependencies.processor
     const portfolio = await this.dependencies.database.portfolio.findUnique({
       where: { id: portfolioId },
-      include: { pdfAsset: true },
+      include: { pdfAsset: true, replacementPdfAsset: true, videoAsset: true },
     })
-    if (!portfolio || portfolio.status !== PortfolioStatus.PROCESSING) return
+    const isReplacement = Boolean(
+      portfolio?.replacementPdfAsset &&
+        portfolio.replacementStatus === PortfolioReplacementStatus.PROCESSING,
+    )
+    if (!portfolio || (portfolio.status !== PortfolioStatus.PROCESSING && !isReplacement)) return
     if (!processor) {
-      await this.failProcessing(portfolioId, portfolio.authorId, "PROCESSOR_NOT_CONFIGURED")
+      if (isReplacement) {
+        await this.failReplacement(portfolioId, portfolio.authorId, "PROCESSOR_NOT_CONFIGURED")
+      } else {
+        await this.failProcessing(portfolioId, portfolio.authorId, "PROCESSOR_NOT_CONFIGURED")
+      }
       return
     }
 
     try {
-      const pdfUrl = await this.dependencies.signer.signGet(portfolio.pdfAsset.storageKey)
+      const sourcePdf = isReplacement ? portfolio.replacementPdfAsset : portfolio.pdfAsset
+      if (!sourcePdf) throw new Error("Replacement PDF is missing")
+      const pdfUrl = await this.dependencies.signer.signGet(sourcePdf.storageKey)
+      const videoUrl =
+        !isReplacement && portfolio.videoAsset
+          ? await this.dependencies.signer.signGet(portfolio.videoAsset.storageKey)
+          : undefined
       const result = await processor.process({
-        outputPrefix: `users/${portfolio.authorId}/portfolios/${portfolioId}/pages`,
+        outputPrefix: isReplacement
+          ? `users/${portfolio.authorId}/portfolios/${portfolioId}/replacements/${sourcePdf.id}/pages`
+          : `users/${portfolio.authorId}/portfolios/${portfolioId}/pages`,
         pdfUrl,
         portfolioId,
+        ...(videoUrl ? { videoUrl } : {}),
       })
       await this.completePortfolioProcessing(portfolioId, result)
     } catch {
-      await this.failProcessing(portfolioId, portfolio.authorId, "PDF_CONVERSION_FAILED")
+      if (isReplacement) {
+        await this.failReplacement(portfolioId, portfolio.authorId, "PDF_CONVERSION_FAILED")
+      } else {
+        await this.failProcessing(portfolioId, portfolio.authorId, "PDF_CONVERSION_FAILED")
+      }
       throw new Error("Portfolio processing failed")
     }
+  }
+
+  private async failReplacement(portfolioId: string, userId: string, code: string) {
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementErrorCode: code,
+          replacementStatus: PortfolioReplacementStatus.FAILED,
+        },
+      }),
+      this.dependencies.database.notification.create({
+        data: {
+          entityId: portfolioId,
+          entityType: "portfolio",
+          type: NotificationType.PORTFOLIO_PROCESSING_FAILED,
+          userId,
+        },
+      }),
+    ])
+    this.track("portfolio_processing_failed")
   }
 
   private async failProcessing(portfolioId: string, userId: string, code: string) {
@@ -1760,6 +2506,7 @@ export class PrismaCoreService implements CoreService {
         },
       }),
     ])
+    this.track("portfolio_processing_failed")
   }
 
   private async createMannerAvailabilityNotifications(scoutRequestId: string) {
@@ -1805,7 +2552,14 @@ export class PrismaCoreService implements CoreService {
           OR: [{ recipientId: userId }, { senderId: userId }],
         },
       },
-      include: { scoutRequest: true },
+      include: {
+        scoutRequest: {
+          include: {
+            recipient: { select: { status: true } },
+            sender: { select: { status: true } },
+          },
+        },
+      },
     })
     if (!room) throw new ApiError(403, "CHAT_FORBIDDEN", "채팅방에 접근할 수 없어요.")
     return room
@@ -1872,6 +2626,7 @@ export class PrismaCoreService implements CoreService {
     })
     const profile = portfolio?.author.profile
     if (!portfolio || !profile?.handle || !profile.nickname || !portfolio.publishedAt) return
+    const hasReadyVideo = portfolio.videoAsset?.status === AssetStatus.READY
 
     const pageStatements = portfolio.pages.map((page) =>
       this.dependencies.edgeDatabase
@@ -1930,8 +2685,8 @@ export class PrismaCoreService implements CoreService {
           portfolio.pages[0]
             ? `${this.dependencies.apiOrigin}/v1/assets/${portfolio.pages[0].thumbnailAssetId}`
             : null,
-          portfolio.videoAssetId ? 1 : 0,
-          portfolio.videoAssetId
+          hasReadyVideo ? 1 : 0,
+          hasReadyVideo
             ? `${this.dependencies.apiOrigin}/v1/assets/${portfolio.videoAssetId}`
             : null,
           JSON.stringify(portfolio.roles.map(({ role }) => role.slug)),

@@ -14,6 +14,7 @@ import type { ReadinessResult } from "./readiness"
 export type {
   AssetUploadTicket,
   ChatMessage,
+  ChatMessagePage,
   ChatRoomSummary,
   CoreService,
   NotificationSummary,
@@ -24,6 +25,7 @@ export type {
   ScoutCandidate,
   ScoutRequestSummary,
   SessionUser,
+  UnreadCounts,
 } from "./core"
 export type {
   DiscoveryPortfolio,
@@ -36,7 +38,6 @@ export type {
 const defaultReadiness: ReadinessResult = {
   status: "degraded",
   checks: {
-    postgres: "error",
     d1: "error",
     r2: "error",
     oauth: "error",
@@ -48,7 +49,6 @@ const defaultReadiness: ReadinessResult = {
 const readinessSchema = t.Object({
   status: t.Union([t.Literal("ok"), t.Literal("degraded")]),
   checks: t.Object({
-    postgres: t.Union([t.Literal("ok"), t.Literal("error")]),
     d1: t.Union([t.Literal("ok"), t.Literal("error")]),
     r2: t.Union([t.Literal("ok"), t.Literal("error")]),
     oauth: t.Union([t.Literal("ok"), t.Literal("error")]),
@@ -167,6 +167,7 @@ export function createApp(options: CreateAppOptions = {}) {
           servers: [{ url: "https://api.greeney.life", description: "Production" }],
           tags: [
             { name: "System", description: "서비스 상태 확인" },
+            { name: "Analytics", description: "개인정보 없는 제품 지표" },
             { name: "Discovery", description: "공개 프로젝트 탐색" },
             { name: "Auth", description: "로그인과 세션" },
             { name: "Profile", description: "프로필" },
@@ -296,7 +297,7 @@ export function createApp(options: CreateAppOptions = {}) {
         response: { 200: readinessSchema, 503: readinessSchema },
         detail: {
           summary: "Readiness 확인",
-          description: "PostgreSQL, D1, R2 바인딩의 준비 상태를 확인합니다.",
+          description: "D1, R2, OAuth, Queue 바인딩의 준비 상태를 확인합니다.",
           tags: ["System"],
         },
       },

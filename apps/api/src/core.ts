@@ -29,12 +29,17 @@ export type ProfileSummary = {
 }
 
 export type PortfolioSummary = {
+  hasPendingVideoReplacement: boolean
+  hasVideo: boolean
   id: string
   publishedAt: string | null
-  status: "archived" | "draft" | "failed" | "processing" | "published"
+  replacementErrorCode: string | null
+  replacementStatus: "failed" | "processing" | "uploading" | null
+  status: "archived" | "draft" | "failed" | "processing" | "published" | "ready"
   tags: string[]
   title: string
   roles: Array<{ name: string; slug: string }>
+  videoErrorCode: string | null
 }
 
 export type PublicProfile = ProfileSummary & {
@@ -58,7 +63,7 @@ export type CreatePortfolioInput = {
   title: string
   video?: {
     byteSize: number
-    durationSeconds?: number
+    durationSeconds: number
     mimeType: "video/mp4" | "video/quicktime" | "video/webm"
   }
 }
@@ -101,6 +106,7 @@ export type ProcessedPortfolioPage = {
 export type CompletePortfolioProcessingInput = {
   pageCount: number
   pages: ProcessedPortfolioPage[]
+  video?: { durationSeconds: number; status: "ready" } | { errorCode: string; status: "failed" }
 }
 
 export type CreateScoutRequestInput = {
@@ -118,12 +124,13 @@ export type ScoutRequestSummary = {
   createdAt: string
   direction: "received" | "sent"
   id: string
+  isUnread: boolean
   projectSummary: string
   projectTitle: string
   requestedRole: { name: string; slug: string }
   sourcePortfolio: { id: string; title: string }
   status: ScoutRequestStatus
-  user: { handle: string; nickname: string; userId: string }
+  user: { handle: string; isDeleted: boolean; nickname: string; userId: string }
 }
 
 export type ChatRoomSummary = {
@@ -132,7 +139,7 @@ export type ChatRoomSummary = {
   isReadOnly: boolean
   lastMessage: { body: string | null; createdAt: string; type: "image" | "system" | "text" } | null
   scoutContext: { portfolioTitle: string; requestId: string; roleName: string }
-  user: { handle: string; nickname: string; userId: string }
+  user: { handle: string; isDeleted: boolean; nickname: string; userId: string }
   unreadCount: number
 }
 
@@ -144,6 +151,38 @@ export type ChatMessage = {
   isMine: boolean
   type: "image" | "system" | "text"
 }
+
+export type ChatMessagePage = {
+  cursor: string | null
+  hasMore: boolean
+  items: ChatMessage[]
+}
+
+export type UnreadCounts = {
+  chat: number
+  requests: number
+}
+
+export type ProductEvent =
+  | "account_deleted"
+  | "bookmark_added"
+  | "bookmark_removed"
+  | "chat_message_sent"
+  | "feed_viewed"
+  | "manner_submitted"
+  | "portfolio_processing_failed"
+  | "portfolio_processing_succeeded"
+  | "portfolio_published"
+  | "portfolio_upload_started"
+  | "portfolio_viewed"
+  | "profile_completed"
+  | "profile_viewed"
+  | "report_submitted"
+  | "scout_accepted"
+  | "scout_canceled"
+  | "scout_declined"
+  | "scout_sent"
+  | "signed_up"
 
 export type NotificationSummary = {
   createdAt: string
@@ -173,17 +212,43 @@ export type ReportTargetType = "message" | "portfolio" | "scout_request" | "user
 
 export interface CoreService {
   archivePortfolio(userId: string, portfolioId: string): Promise<void>
+  cancelPortfolioPdfReplacement(userId: string, portfolioId: string): Promise<void>
+  cancelPortfolioVideoReplacement(userId: string, portfolioId: string): Promise<void>
   completePortfolioProcessing(
     portfolioId: string,
     input: CompletePortfolioProcessingInput,
   ): Promise<void>
   confirmPortfolioUpload(userId: string, portfolioId: string): Promise<void>
+  confirmPortfolioPdfReplacement(
+    userId: string,
+    portfolioId: string,
+    assetId: string,
+  ): Promise<void>
+  confirmPortfolioVideoReplacement(
+    userId: string,
+    portfolioId: string,
+    assetId: string,
+  ): Promise<void>
   confirmAvatarUpload(userId: string, assetId: string): Promise<void>
   createAvatarUpload(
     userId: string,
     input: { byteSize: number; mimeType: "image/jpeg" | "image/png" | "image/webp" },
   ): Promise<AssetUploadTicket>
   createPortfolio(userId: string, input: CreatePortfolioInput): Promise<PortfolioUploadTicket>
+  createPortfolioPdfReplacement(
+    userId: string,
+    portfolioId: string,
+    input: { byteSize: number; mimeType: "application/pdf" },
+  ): Promise<AssetUploadTicket>
+  createPortfolioVideoReplacement(
+    userId: string,
+    portfolioId: string,
+    input: {
+      byteSize: number
+      durationSeconds: number
+      mimeType: "video/mp4" | "video/quicktime" | "video/webm"
+    },
+  ): Promise<AssetUploadTicket>
   createChatImageUpload(
     userId: string,
     roomId: string,
@@ -191,6 +256,7 @@ export interface CoreService {
   ): Promise<AssetUploadTicket>
   createScoutRequest(userId: string, input: CreateScoutRequestInput): Promise<{ id: string }>
   createSession(userId: string): Promise<{ expiresAt: Date; token: string }>
+  deleteAccount(userId: string): Promise<void>
   deleteSession(token: string): Promise<void>
   getMe(userId: string): Promise<ProfileSummary | null>
   getAssetAccess(
@@ -198,8 +264,9 @@ export interface CoreService {
     assetId: string,
   ): Promise<{ mimeType: string; storageKey: string } | null>
   getPublicProfile(handle: string): Promise<PublicProfile | null>
+  getUnreadCounts(userId: string): Promise<UnreadCounts>
   listBookmarks(userId: string): Promise<PortfolioSummary[]>
-  listChatMessages(userId: string, roomId: string): Promise<ChatMessage[]>
+  listChatMessages(userId: string, roomId: string, after?: string): Promise<ChatMessagePage>
   listChatRooms(userId: string): Promise<ChatRoomSummary[]>
   listNotifications(userId: string): Promise<NotificationSummary[]>
   listExcludedDiscoveryAuthors(userId: string): Promise<string[]>
@@ -214,6 +281,8 @@ export interface CoreService {
   ): Promise<void>
   moderatePortfolio(userId: string, portfolioId: string): Promise<void>
   publishPortfolio(userId: string, portfolioId: string): Promise<void>
+  purgeDeletedAssets(): Promise<void>
+  removePortfolioVideo(userId: string, portfolioId: string): Promise<void>
   retryPortfolio(userId: string, portfolioId: string): Promise<void>
   report(
     userId: string,
@@ -247,6 +316,7 @@ export interface CoreService {
     scoutRequestId: string,
     sentiment: MannerSentiment,
   ): Promise<void>
+  trackProductEvent(event: ProductEvent): Promise<void>
   transitionScoutRequest(
     userId: string,
     scoutRequestId: string,

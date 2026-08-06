@@ -44,7 +44,7 @@ describe("DiscoveryFeed", () => {
     expect(screen.getByText("#핀테크")).toBeInTheDocument()
     expect(screen.getByRole("link", { name: /대학생 금융 습관 서비스/ })).toHaveAttribute(
       "href",
-      "/portfolios/portfolio-1",
+      "/portfolio?portfolio=portfolio-1",
     )
   })
 

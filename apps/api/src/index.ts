@@ -2,14 +2,15 @@ import { env } from "cloudflare:workers"
 import { createPrismaClient } from "@scouty/db"
 import { createApp } from "./app"
 import { ChatRoomHub } from "./chat-room"
-import { ApiError, type CompletePortfolioProcessingInput } from "./core"
+import { ApiError, type CompletePortfolioProcessingInput, type ProductEvent } from "./core"
 import { PrismaCoreService } from "./core-prisma"
 import { D1DiscoveryRepository } from "./discovery"
 import { PortfolioMediaContainer } from "./media-container"
 import { checkReadiness } from "./readiness"
 import { R2UploadSigner } from "./security"
 
-const database = env.HYPERDRIVE ? createPrismaClient(env.HYPERDRIVE.connectionString) : null
+const database = createPrismaClient(env.DB)
+const analytics = (env as typeof env & { ANALYTICS: AnalyticsEngineDataset }).ANALYTICS
 
 const signer =
   env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY
@@ -29,7 +30,22 @@ const signer =
       }
 
 const processor = {
-  async process(input: { outputPrefix: string; pdfUrl: string; portfolioId: string }) {
+  async inspectVideo(input: { portfolioId: string; videoUrl: string }) {
+    const stub = env.MEDIA_PROCESSOR.get(env.MEDIA_PROCESSOR.idFromName(input.portfolioId))
+    const response = await stub.fetch("http://container/inspect-video", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    })
+    if (!response.ok) throw new Error(`Media processor failed with ${response.status}`)
+    return (await response.json()) as { durationSeconds: number }
+  },
+  async process(input: {
+    outputPrefix: string
+    pdfUrl: string
+    portfolioId: string
+    videoUrl?: string
+  }) {
     const stub = env.MEDIA_PROCESSOR.get(env.MEDIA_PROCESSOR.idFromName(input.portfolioId))
     const response = await stub.fetch("http://container/process", {
       method: "POST",
@@ -41,24 +57,25 @@ const processor = {
   },
 }
 
-const core = database
-  ? new PrismaCoreService({
-      apiOrigin: env.API_ORIGIN,
-      assets: env.ASSETS,
-      database,
-      edgeDatabase: env.EDGE_DB,
-      notifyChat: async (roomId, message) => {
-        const stub = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(roomId))
-        await stub.fetch("https://chat.internal/notify", {
-          method: "POST",
-          body: JSON.stringify(message),
-        })
-      },
-      processingQueue: env.PORTFOLIO_PROCESSING,
-      processor,
-      signer,
+const core = new PrismaCoreService({
+  apiOrigin: env.API_ORIGIN,
+  assets: env.ASSETS,
+  database,
+  edgeDatabase: env.DB,
+  notifyChat: async (roomId, message) => {
+    const stub = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(roomId))
+    await stub.fetch("https://chat.internal/notify", {
+      method: "POST",
+      body: JSON.stringify(message),
     })
-  : undefined
+  },
+  processingQueue: env.PORTFOLIO_PROCESSING,
+  processor,
+  signer,
+  track: (event: ProductEvent) => {
+    analytics.writeDataPoint({ blobs: [event], doubles: [1] })
+  },
+})
 
 const google =
   env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.OAUTH_STATE_SECRET
@@ -74,9 +91,9 @@ const app = createApp({
   assets: env.ASSETS,
   chatRooms: env.CHAT_ROOMS,
   cookieDomain: env.COOKIE_DOMAIN,
-  ...(core ? { core } : {}),
+  core,
   corsOrigins: env.CORS_ORIGINS,
-  discovery: new D1DiscoveryRepository(env.EDGE_DB),
+  discovery: new D1DiscoveryRepository(env.DB),
   ...(google ? { google } : {}),
   readiness: () => checkReadiness(env),
   webOrigin: env.WEB_ORIGIN,
@@ -90,10 +107,6 @@ export default {
   fetch: handler.fetch,
   async queue(batch: MessageBatch<{ portfolioId: string }>) {
     for (const message of batch.messages) {
-      if (!core) {
-        message.retry()
-        continue
-      }
       try {
         await core.processPortfolio(message.body.portfolioId)
         message.ack()
@@ -103,7 +116,7 @@ export default {
     }
   },
   async scheduled(controller: ScheduledController) {
-    if (controller.cron === "15 3 * * *") await core?.rebuildDiscoveryProjection()
-    else await core?.recomputeScoutStats()
+    if (controller.cron === "15 3 * * *") await core.rebuildDiscoveryProjection()
+    else await Promise.all([core.recomputeScoutStats(), core.purgeDeletedAssets()])
   },
 }

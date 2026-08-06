@@ -1,4 +1,4 @@
-@import "pretendard/dist/web/variable/pretendardvariable.css";
+@import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -9,7 +9,7 @@
   --foreground: oklch(0.2 0.02 285);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.2 0.02 285);
-  --primary: oklch(0.57 0.24 285);
+  --primary: oklch(0.52 0.23 285);
   --primary-foreground: oklch(1 0 0);
   --secondary: oklch(0.96 0.01 285);
   --secondary-foreground: oklch(0.28 0.03 285);
@@ -60,6 +60,25 @@ body {
   font-family: var(--font-sans);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+.skip-link {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 50;
+  transform: translateY(-200%);
+  border-radius: 0.75rem;
+  background: var(--foreground);
+  color: var(--background);
+  padding: 0.75rem 1rem;
+  font-weight: 700;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+  outline: 3px solid var(--ring);
+  outline-offset: 2px;
 }
 
 ::selection {

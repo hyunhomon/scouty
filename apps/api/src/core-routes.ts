@@ -58,7 +58,7 @@ const portfolioInput = t.Object({
   video: t.Optional(
     t.Object({
       byteSize: t.Number({ maximum: 200 * 1024 * 1024, minimum: 1 }),
-      durationSeconds: t.Optional(t.Number({ maximum: 180, minimum: 1 })),
+      durationSeconds: t.Number({ maximum: 180, minimum: 1 }),
       mimeType: t.Union([
         t.Literal("video/mp4"),
         t.Literal("video/webm"),
@@ -66,6 +66,21 @@ const portfolioInput = t.Object({
       ]),
     }),
   ),
+})
+
+const pdfUploadInput = t.Object({
+  byteSize: t.Number({ maximum: 50 * 1024 * 1024, minimum: 1 }),
+  mimeType: t.Literal("application/pdf"),
+})
+
+const videoUploadInput = t.Object({
+  byteSize: t.Number({ maximum: 200 * 1024 * 1024, minimum: 1 }),
+  durationSeconds: t.Number({ maximum: 180, minimum: 1 }),
+  mimeType: t.Union([
+    t.Literal("video/mp4"),
+    t.Literal("video/webm"),
+    t.Literal("video/quicktime"),
+  ]),
 })
 
 function getCore(options: CoreRouteOptions) {
@@ -172,6 +187,24 @@ export function createCoreRoutes(options: CoreRouteOptions) {
       },
       { detail: { summary: "로그아웃", tags: ["Auth"] } },
     )
+    .post(
+      "/v1/analytics/events",
+      async ({ body, request }) => {
+        assertRequestOrigin(request, options)
+        await getCore(options).trackProductEvent(body.name)
+        return { ok: true }
+      },
+      {
+        body: t.Object({
+          name: t.Union([
+            t.Literal("feed_viewed"),
+            t.Literal("portfolio_viewed"),
+            t.Literal("profile_viewed"),
+          ]),
+        }),
+        detail: { summary: "익명 제품 이벤트", tags: ["Analytics"] },
+      },
+    )
     .get(
       "/v1/me",
       async ({ request }) => {
@@ -179,6 +212,24 @@ export function createCoreRoutes(options: CoreRouteOptions) {
         return getCore(options).getMe(user.id)
       },
       { detail: { summary: "내 프로필", tags: ["Profile"] } },
+    )
+    .get(
+      "/v1/me/unread-counts",
+      async ({ request }) => {
+        const user = await requireUser(request, options)
+        return getCore(options).getUnreadCounts(user.id)
+      },
+      { detail: { summary: "제안·채팅 읽지 않음", tags: ["Profile"] } },
+    )
+    .delete(
+      "/v1/me/account",
+      async ({ request, set }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).deleteAccount(user.id)
+        set.headers["set-cookie"] = clearSessionCookie(options.cookieDomain)
+        return { ok: true }
+      },
+      { detail: { summary: "계정 삭제", tags: ["Profile"] } },
     )
     .put(
       "/v1/me/profile",
@@ -256,6 +307,87 @@ export function createCoreRoutes(options: CoreRouteOptions) {
         return { ok: true }
       },
       { params: idParams, detail: { summary: "프로젝트 업로드 완료", tags: ["Portfolio"] } },
+    )
+    .post(
+      "/v1/me/portfolios/:id/pdf-replacements",
+      async ({ body, params, request }) => {
+        const user = await requireUser(request, options)
+        return getCore(options).createPortfolioPdfReplacement(user.id, params.id, body)
+      },
+      {
+        body: pdfUploadInput,
+        params: idParams,
+        detail: { summary: "교체 PDF 업로드 URL", tags: ["Portfolio"] },
+      },
+    )
+    .post(
+      "/v1/me/portfolios/:id/pdf-replacements/:assetId/complete",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).confirmPortfolioPdfReplacement(user.id, params.id, params.assetId)
+        return { ok: true }
+      },
+      {
+        params: t.Object({
+          assetId: t.String({ maxLength: 100, minLength: 1 }),
+          id: t.String({ maxLength: 100, minLength: 1 }),
+        }),
+        detail: { summary: "교체 PDF 업로드 완료", tags: ["Portfolio"] },
+      },
+    )
+    .delete(
+      "/v1/me/portfolios/:id/pdf-replacements",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).cancelPortfolioPdfReplacement(user.id, params.id)
+        return { ok: true }
+      },
+      { params: idParams, detail: { summary: "PDF 교체 취소", tags: ["Portfolio"] } },
+    )
+    .post(
+      "/v1/me/portfolios/:id/video-replacements",
+      async ({ body, params, request }) => {
+        const user = await requireUser(request, options)
+        return getCore(options).createPortfolioVideoReplacement(user.id, params.id, body)
+      },
+      {
+        body: videoUploadInput,
+        params: idParams,
+        detail: { summary: "교체 영상 업로드 URL", tags: ["Portfolio"] },
+      },
+    )
+    .post(
+      "/v1/me/portfolios/:id/video-replacements/:assetId/complete",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).confirmPortfolioVideoReplacement(user.id, params.id, params.assetId)
+        return { ok: true }
+      },
+      {
+        params: t.Object({
+          assetId: t.String({ maxLength: 100, minLength: 1 }),
+          id: t.String({ maxLength: 100, minLength: 1 }),
+        }),
+        detail: { summary: "교체 영상 업로드 완료", tags: ["Portfolio"] },
+      },
+    )
+    .delete(
+      "/v1/me/portfolios/:id/video-replacements",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).cancelPortfolioVideoReplacement(user.id, params.id)
+        return { ok: true }
+      },
+      { params: idParams, detail: { summary: "영상 교체 취소", tags: ["Portfolio"] } },
+    )
+    .delete(
+      "/v1/me/portfolios/:id/video",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).removePortfolioVideo(user.id, params.id)
+        return { ok: true }
+      },
+      { params: idParams, detail: { summary: "프로젝트 영상 제거", tags: ["Portfolio"] } },
     )
     .post(
       "/v1/me/portfolios/:id/publish",
@@ -393,11 +525,15 @@ export function createCoreRoutes(options: CoreRouteOptions) {
     )
     .get(
       "/v1/chat/rooms/:id/messages",
-      async ({ params, request }) => {
+      async ({ params, query, request }) => {
         const user = await requireUser(request, options)
-        return getCore(options).listChatMessages(user.id, params.id)
+        return getCore(options).listChatMessages(user.id, params.id, query.after)
       },
-      { params: idParams, detail: { summary: "채팅 메시지", tags: ["Chat"] } },
+      {
+        params: idParams,
+        query: t.Object({ after: t.Optional(t.String({ maxLength: 512 })) }),
+        detail: { summary: "채팅 메시지", tags: ["Chat"] },
+      },
     )
     .get(
       "/v1/chat/rooms/:id/socket",

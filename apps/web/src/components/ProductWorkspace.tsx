@@ -1,5 +1,7 @@
 import type {
+  AssetUploadTicket,
   ChatMessage,
+  ChatMessagePage,
   ChatRoomSummary,
   NotificationSummary,
   PortfolioSummary,
@@ -9,6 +11,7 @@ import type {
   ScoutCandidate,
   ScoutRequestSummary,
   SessionUser,
+  UnreadCounts,
 } from "@scouty/api"
 import {
   Bell,
@@ -25,6 +28,7 @@ import { type SubmitEvent, useCallback, useEffect, useMemo, useRef, useState } f
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { trackProductEvent } from "@/lib/analytics"
 import { apiUrl } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -65,7 +69,7 @@ function LoadingPanel({ label = "불러오는 중" }: { label?: string }) {
 
 function ErrorPanel({ message, retry }: { message: string; retry?: () => void }) {
   return (
-    <Card className="rounded-2xl p-8 text-center shadow-none">
+    <Card className="rounded-2xl p-8 text-center shadow-none" aria-live="polite">
       <p className="font-bold">{message}</p>
       {retry ? (
         <Button type="button" variant="outline" className="mt-4" onClick={retry}>
@@ -115,9 +119,11 @@ const navItems: Array<{
 
 function WorkspaceNav({
   isAuthenticated,
+  unreadCounts,
   view,
 }: {
   isAuthenticated: boolean
+  unreadCounts: UnreadCounts
   view: WorkspaceView
 }) {
   if (!isAuthenticated || view === "onboarding") return null
@@ -126,23 +132,38 @@ function WorkspaceNav({
       <div className="flex min-w-max gap-1 rounded-2xl border bg-card p-1.5">
         {navItems.map((item) => {
           const Icon = item.icon
+          const unreadCount =
+            item.view === "chat"
+              ? unreadCounts.chat
+              : item.view === "requests"
+                ? unreadCounts.requests
+                : 0
           return (
             <a
               key={item.view}
               href={item.href}
               aria-current={view === item.view ? "page" : undefined}
               className={cn(
-                "flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-semibold transition",
+                "flex h-11 items-center gap-2 rounded-xl px-3 text-sm font-semibold transition",
                 view === item.view ? "bg-primary text-primary-foreground" : "hover:bg-muted",
               )}
             >
               <Icon aria-hidden="true" size={17} /> {item.label}
+              {unreadCount > 0 ? (
+                <Badge
+                  aria-label={`${item.label} 읽지 않음 ${unreadCount}개`}
+                  className="min-w-5 justify-center px-1.5"
+                  variant={view === item.view ? "secondary" : "default"}
+                >
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </Badge>
+              ) : null}
             </a>
           )
         })}
         <button
           type="button"
-          className="h-10 rounded-xl px-3 text-sm font-semibold text-muted-foreground hover:bg-muted"
+          className="h-11 rounded-xl px-3 text-sm font-semibold text-muted-foreground hover:bg-muted"
           onClick={async () => {
             await request("/v1/auth/logout", { method: "POST" })
             window.location.assign("/feed")
@@ -168,6 +189,27 @@ const inputClass =
   "h-11 rounded-xl border bg-background px-3 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
 const textareaClass =
   "min-h-24 resize-y rounded-xl border bg-background px-3 py-2.5 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+
+async function readVideoDuration(file: File) {
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    return await new Promise<number>((resolve, reject) => {
+      const video = document.createElement("video")
+      video.preload = "metadata"
+      video.onloadedmetadata = () => {
+        if (!Number.isFinite(video.duration) || video.duration <= 0) {
+          reject(new Error("영상 길이를 확인하지 못했어요."))
+          return
+        }
+        resolve(Math.ceil(video.duration))
+      }
+      video.onerror = () => reject(new Error("영상 파일을 읽지 못했어요."))
+      video.src = objectUrl
+    })
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
 
 function OnboardingView({
   initialProfile,
@@ -325,7 +367,11 @@ function OnboardingView({
             <option value="closed">지금은 받지 않아요</option>
           </select>
         </Field>
-        {message ? <p className="text-sm text-destructive">{message}</p> : null}
+        {message ? (
+          <p className="text-sm text-destructive" role="status" aria-live="polite">
+            {message}
+          </p>
+        ) : null}
         <Button type="submit" size="lg" disabled={isSaving || selectedRoles.length === 0}>
           {isSaving ? "저장하는 중" : "프로필 저장"}
         </Button>
@@ -348,6 +394,11 @@ function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreated: () 
     setIsSubmitting(true)
     setError(undefined)
     try {
+      const videoDurationSeconds =
+        video instanceof File && video.size > 0 ? await readVideoDuration(video) : null
+      if (videoDurationSeconds && videoDurationSeconds > 180) {
+        throw new Error("영상은 최대 3분까지 올릴 수 있어요.")
+      }
       const ticket = await request<PortfolioUploadTicket>("/v1/me/portfolios", {
         method: "POST",
         body: JSON.stringify({
@@ -356,7 +407,13 @@ function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreated: () 
           tags: String(form.get("tags") ?? "").split(","),
           title: form.get("title"),
           ...(video instanceof File && video.size > 0
-            ? { video: { byteSize: video.size, mimeType: video.type } }
+            ? {
+                video: {
+                  byteSize: video.size,
+                  durationSeconds: videoDurationSeconds,
+                  mimeType: video.type,
+                },
+              }
             : {}),
         }),
       })
@@ -426,7 +483,11 @@ function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreated: () 
         <Field label="태그 1~5개 (쉼표로 구분)">
           <input className={inputClass} name="tags" placeholder="핀테크, 모바일" required />
         </Field>
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+        {error ? (
+          <p className="text-sm text-destructive" role="status" aria-live="polite">
+            {error}
+          </p>
+        ) : null}
         <Button type="submit" disabled={isSubmitting || selectedRoles.length === 0}>
           <FileUp aria-hidden="true" /> {isSubmitting ? "올리고 있어요" : "프로젝트 등록"}
         </Button>
@@ -445,8 +506,17 @@ function PortfolioCard({
   roles: Role[]
 }) {
   const [isEditing, setIsEditing] = useState(false)
+  const [isMediaUpdating, setIsMediaUpdating] = useState(false)
   const [selectedRoles, setSelectedRoles] = useState(portfolio.roles.map((role) => role.slug))
   const [message, setMessage] = useState<string>()
+  const statusLabel = {
+    archived: "보관됨",
+    draft: "업로드 대기",
+    failed: "처리 실패",
+    processing: "처리 중",
+    published: "게시됨",
+    ready: "게시 준비 완료",
+  }[portfolio.status]
 
   async function action(value: "archive" | "publish" | "retry") {
     try {
@@ -454,6 +524,118 @@ function PortfolioCard({
       await onRefresh()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "프로젝트 상태를 바꾸지 못했어요.")
+    }
+  }
+
+  async function replacePdf(file: File) {
+    setIsMediaUpdating(true)
+    setMessage(undefined)
+    let ticketCreated = false
+    try {
+      const ticket = await request<AssetUploadTicket>(
+        `/v1/me/portfolios/${portfolio.id}/pdf-replacements`,
+        {
+          method: "POST",
+          body: JSON.stringify({ byteSize: file.size, mimeType: "application/pdf" }),
+        },
+      )
+      ticketCreated = true
+      const upload = await fetch(ticket.url, {
+        method: "PUT",
+        headers: ticket.headers,
+        body: file,
+      })
+      if (!upload.ok) throw new Error("새 PDF를 올리지 못했어요.")
+      await request(
+        `/v1/me/portfolios/${portfolio.id}/pdf-replacements/${ticket.assetId}/complete`,
+        { method: "POST" },
+      )
+      setMessage("새 PDF를 처리하고 있어요. 기존 게시물은 그대로 유지돼요.")
+      await onRefresh()
+    } catch (error) {
+      if (ticketCreated) {
+        await request(`/v1/me/portfolios/${portfolio.id}/pdf-replacements`, {
+          method: "DELETE",
+        }).catch(() => undefined)
+      }
+      setMessage(error instanceof Error ? error.message : "PDF를 교체하지 못했어요.")
+    } finally {
+      setIsMediaUpdating(false)
+    }
+  }
+
+  async function cancelPdfReplacement() {
+    try {
+      await request(`/v1/me/portfolios/${portfolio.id}/pdf-replacements`, { method: "DELETE" })
+      setMessage("PDF 교체를 취소했어요.")
+      await onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "PDF 교체를 취소하지 못했어요.")
+    }
+  }
+
+  async function replaceVideo(file: File) {
+    setIsMediaUpdating(true)
+    setMessage(undefined)
+    let ticketCreated = false
+    try {
+      const durationSeconds = await readVideoDuration(file)
+      if (durationSeconds > 180) throw new Error("영상은 최대 3분까지 올릴 수 있어요.")
+      const ticket = await request<AssetUploadTicket>(
+        `/v1/me/portfolios/${portfolio.id}/video-replacements`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            byteSize: file.size,
+            durationSeconds,
+            mimeType: file.type,
+          }),
+        },
+      )
+      ticketCreated = true
+      const upload = await fetch(ticket.url, {
+        method: "PUT",
+        headers: ticket.headers,
+        body: file,
+      })
+      if (!upload.ok) throw new Error("새 영상을 올리지 못했어요.")
+      await request(
+        `/v1/me/portfolios/${portfolio.id}/video-replacements/${ticket.assetId}/complete`,
+        { method: "POST" },
+      )
+      setMessage("영상을 교체했어요.")
+      await onRefresh()
+    } catch (error) {
+      if (ticketCreated) {
+        await request(`/v1/me/portfolios/${portfolio.id}/video-replacements`, {
+          method: "DELETE",
+        }).catch(() => undefined)
+      }
+      setMessage(error instanceof Error ? error.message : "영상을 교체하지 못했어요.")
+    } finally {
+      setIsMediaUpdating(false)
+    }
+  }
+
+  async function cancelVideoReplacement() {
+    try {
+      await request(`/v1/me/portfolios/${portfolio.id}/video-replacements`, {
+        method: "DELETE",
+      })
+      setMessage("영상 교체를 취소했어요.")
+      await onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "영상 교체를 취소하지 못했어요.")
+    }
+  }
+
+  async function removeVideo() {
+    try {
+      await request(`/v1/me/portfolios/${portfolio.id}/video`, { method: "DELETE" })
+      setMessage("영상을 제거했어요.")
+      await onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "영상을 제거하지 못했어요.")
     }
   }
 
@@ -480,14 +662,17 @@ function PortfolioCard({
     <Card className="rounded-2xl p-5 shadow-none">
       <div className="flex items-start justify-between gap-3">
         <h3 className="font-bold">{portfolio.title}</h3>
-        <Badge variant="secondary">{portfolio.status}</Badge>
+        <Badge variant="secondary">{statusLabel}</Badge>
       </div>
       <p className="mt-3 text-sm text-muted-foreground">
         {portfolio.tags.map((tag) => `#${tag}`).join(" ")}
       </p>
       <div className="mt-4 flex flex-wrap gap-3 text-sm">
         {portfolio.status === "published" ? (
-          <a href={`/portfolios/${portfolio.id}`} className="font-semibold text-primary">
+          <a
+            href={`/portfolio?portfolio=${encodeURIComponent(portfolio.id)}`}
+            className="font-semibold text-primary"
+          >
             상세 보기
           </a>
         ) : null}
@@ -498,7 +683,7 @@ function PortfolioCard({
         >
           정보 수정
         </button>
-        {portfolio.status === "failed" ? (
+        {portfolio.status === "failed" || portfolio.replacementStatus === "failed" ? (
           <button
             type="button"
             className="font-semibold text-primary"
@@ -507,20 +692,85 @@ function PortfolioCard({
             다시 처리
           </button>
         ) : null}
-        {portfolio.status === "archived" ? (
+        {portfolio.status === "archived" || portfolio.status === "ready" ? (
           <button
             type="button"
             className="font-semibold text-primary"
             onClick={() => action("publish")}
           >
-            다시 게시
+            {portfolio.status === "archived" ? "다시 게시" : "게시"}
           </button>
-        ) : (
+        ) : portfolio.status === "published" ? (
           <button type="button" className="text-muted-foreground" onClick={() => action("archive")}>
             보관
           </button>
-        )}
+        ) : null}
       </div>
+      {portfolio.status === "published" || portfolio.status === "archived" ? (
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-4 text-sm">
+          <label className="cursor-pointer font-semibold text-primary">
+            PDF 교체
+            <input
+              className="sr-only"
+              type="file"
+              accept="application/pdf"
+              disabled={isMediaUpdating || portfolio.replacementStatus !== null}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0]
+                if (file) void replacePdf(file)
+                event.currentTarget.value = ""
+              }}
+            />
+          </label>
+          <label className="cursor-pointer font-semibold text-primary">
+            {portfolio.hasVideo ? "영상 교체" : "영상 추가"}
+            <input
+              className="sr-only"
+              type="file"
+              accept="video/mp4,video/webm,video/quicktime"
+              disabled={isMediaUpdating || portfolio.hasPendingVideoReplacement}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0]
+                if (file) void replaceVideo(file)
+                event.currentTarget.value = ""
+              }}
+            />
+          </label>
+          {portfolio.hasVideo ? (
+            <button type="button" className="text-muted-foreground" onClick={removeVideo}>
+              영상 제거
+            </button>
+          ) : null}
+          {portfolio.replacementStatus && portfolio.replacementStatus !== "processing" ? (
+            <button type="button" className="text-muted-foreground" onClick={cancelPdfReplacement}>
+              교체 취소
+            </button>
+          ) : null}
+          {portfolio.hasPendingVideoReplacement ? (
+            <button
+              type="button"
+              className="text-muted-foreground"
+              onClick={cancelVideoReplacement}
+            >
+              영상 교체 취소
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {portfolio.replacementStatus ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          {portfolio.replacementStatus === "uploading"
+            ? "새 PDF 업로드 대기 중"
+            : portfolio.replacementStatus === "processing"
+              ? "새 PDF 처리 중 · 기존 게시물은 계속 공개돼요."
+              : `새 PDF 처리 실패${portfolio.replacementErrorCode ? ` · ${portfolio.replacementErrorCode}` : ""}`}
+        </p>
+      ) : null}
+      {portfolio.videoErrorCode ? (
+        <p className="mt-3 text-xs text-destructive">
+          영상 처리에 실패했어요. PDF 포트폴리오는 그대로 게시할 수 있어요.
+        </p>
+      ) : null}
       {isEditing ? (
         <form className="mt-5 grid gap-3 border-t pt-5" onSubmit={save}>
           <Field label="제목">
@@ -578,7 +828,11 @@ function PortfolioCard({
           </div>
         </form>
       ) : null}
-      {message ? <p className="mt-3 text-xs text-destructive">{message}</p> : null}
+      {message ? (
+        <p className="mt-3 text-xs text-destructive" role="status" aria-live="polite">
+          {message}
+        </p>
+      ) : null}
     </Card>
   )
 }
@@ -586,6 +840,8 @@ function PortfolioCard({
 function ProfileView({ profile, roles }: { profile: ProfileSummary; roles: Role[] }) {
   const [portfolios, setPortfolios] = useState<PortfolioSummary[]>([])
   const [bookmarks, setBookmarks] = useState<PortfolioSummary[]>([])
+  const [deleteConfirmation, setDeleteConfirmation] = useState("")
+  const [deleteError, setDeleteError] = useState<string>()
   const load = useCallback(async () => {
     const [projects, saved] = await Promise.all([
       request<PortfolioSummary[]>("/v1/me/portfolios"),
@@ -645,7 +901,7 @@ function ProfileView({ profile, roles }: { profile: ProfileSummary; roles: Role[
           {bookmarks.map((portfolio) => (
             <a
               key={portfolio.id}
-              href={`/portfolios/${portfolio.id}`}
+              href={`/portfolio?portfolio=${encodeURIComponent(portfolio.id)}`}
               className="rounded-2xl border bg-card p-5 font-bold"
             >
               {portfolio.title}
@@ -653,7 +909,42 @@ function ProfileView({ profile, roles }: { profile: ProfileSummary; roles: Role[
           ))}
         </div>
       </div>
-      <PortfolioUploader roles={roles} onCreated={load} />
+      <div className="grid content-start gap-6">
+        <PortfolioUploader roles={roles} onCreated={load} />
+        <Card className="rounded-2xl p-5 shadow-none">
+          <h2 className="font-extrabold">계정 설정</h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            계정을 삭제하면 공개 프로필과 프로젝트가 즉시 숨겨지고, 작성한 개인 콘텐츠는 익명화돼요.
+            이 작업은 되돌릴 수 없어요.
+          </p>
+          <label className="mt-4 grid gap-2 text-sm font-semibold">
+            삭제하려면 ‘탈퇴’를 입력해주세요.
+            <input
+              className={inputClass}
+              value={deleteConfirmation}
+              onChange={(event) => setDeleteConfirmation(event.target.value)}
+            />
+          </label>
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-3 text-destructive"
+            disabled={deleteConfirmation !== "탈퇴"}
+            onClick={async () => {
+              setDeleteError(undefined)
+              try {
+                await request("/v1/me/account", { method: "DELETE" })
+                window.location.assign("/feed")
+              } catch (error) {
+                setDeleteError(error instanceof Error ? error.message : "계정을 삭제하지 못했어요.")
+              }
+            }}
+          >
+            계정 삭제
+          </Button>
+          {deleteError ? <p className="mt-3 text-xs text-destructive">{deleteError}</p> : null}
+        </Card>
+      </div>
     </div>
   )
 }
@@ -872,7 +1163,7 @@ function ScoutView({ roles }: { roles: Role[] }) {
                 {bookmarks.has(candidate.id) ? "저장됨" : "저장"}
               </Button>
               <Button asChild variant="outline">
-                <a href={`/portfolios/${candidate.id}`}>상세</a>
+                <a href={`/portfolio?portfolio=${encodeURIComponent(candidate.id)}`}>상세</a>
               </Button>
               <Button onClick={() => setShowProposal(true)}>제안</Button>
             </div>
@@ -918,18 +1209,31 @@ function ScoutView({ roles }: { roles: Role[] }) {
           </form>
         </Card>
       ) : null}
-      {message ? <p className="mt-4 text-center text-sm text-muted-foreground">{message}</p> : null}
+      {message ? (
+        <p
+          className="mt-4 text-center text-sm text-muted-foreground"
+          role="status"
+          aria-live="polite"
+        >
+          {message}
+        </p>
+      ) : null}
     </div>
   )
 }
 
-function RequestsView() {
+function RequestsView({ onRead }: { onRead: () => Promise<void> }) {
   const [direction, setDirection] = useState<"received" | "sent">("received")
   const [items, setItems] = useState<ScoutRequestSummary[]>([])
   const load = useCallback(
     () =>
-      request<ScoutRequestSummary[]>(`/v1/scout/requests?direction=${direction}`).then(setItems),
-    [direction],
+      request<ScoutRequestSummary[]>(`/v1/scout/requests?direction=${direction}`).then(
+        async (next) => {
+          setItems(next)
+          await onRead()
+        },
+      ),
+    [direction, onRead],
   )
   useEffect(() => {
     void load()
@@ -939,7 +1243,8 @@ function RequestsView() {
       `/v1/scout/requests/${id}/${action}`,
       { method: "POST" },
     )
-    if (result.chatRoomId) window.location.assign(`/chat/${result.chatRoomId}`)
+    if (result.chatRoomId)
+      window.location.assign(`/chat?room=${encodeURIComponent(result.chatRoomId)}`)
     else await load()
   }
   return (
@@ -969,7 +1274,10 @@ function RequestsView() {
                 </p>
                 <h2 className="mt-1 font-extrabold">{item.projectTitle}</h2>
               </div>
-              <Badge variant="secondary">{item.status}</Badge>
+              <div className="flex items-center gap-2">
+                {item.isUnread ? <Badge>새 제안</Badge> : null}
+                <Badge variant="secondary">{item.status}</Badge>
+              </div>
             </div>
             <p className="mt-3 text-sm leading-6">{item.projectSummary}</p>
             <p className="mt-3 text-xs text-muted-foreground">
@@ -1023,37 +1331,102 @@ function MessageBody({ body }: { body: string }) {
   return content
 }
 
-function ChatView() {
+function ChatView({ onUnreadChange }: { onUnreadChange: (count: number) => void }) {
   const [rooms, setRooms] = useState<ChatRoomSummary[]>([])
   const [roomId, setRoomId] = useState(
-    () => window.location.pathname.match(/^\/chat\/([^/]+)/)?.[1],
+    () =>
+      window.location.pathname.match(/^\/chat\/([^/]+)/)?.[1] ??
+      new URLSearchParams(window.location.search).get("room") ??
+      undefined,
   )
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [message, setMessage] = useState<string>()
+  const cursorRef = useRef<string | null>(null)
   const loadRooms = useCallback(
     () =>
       request<ChatRoomSummary[]>("/v1/chat/rooms").then((next) => {
         setRooms(next)
         setRoomId((current) => current ?? next[0]?.id)
+        onUnreadChange(next.reduce((total, room) => total + room.unreadCount, 0))
       }),
-    [],
+    [onUnreadChange],
   )
   useEffect(() => {
     void loadRooms()
   }, [loadRooms])
   useEffect(() => {
     if (!roomId) return
-    const loadMessages = () =>
-      request<ChatMessage[]>(`/v1/chat/rooms/${roomId}/messages`).then(setMessages)
-    void loadMessages()
-    const socketUrl = new URL(`${apiUrl}/v1/chat/rooms/${roomId}/socket`)
-    socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:"
-    const socket = new WebSocket(socketUrl)
-    socket.addEventListener("message", () => {
-      void loadMessages()
-    })
-    return () => socket.close()
-  }, [roomId])
+    let retryAttempt = 0
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let socket: WebSocket | undefined
+    let stopped = false
+    let recoverAgain = false
+    let recovery: Promise<void> | null = null
+    cursorRef.current = null
+    setMessages([])
+
+    const recoverMessages = (reset = false): Promise<void> => {
+      if (recovery) {
+        recoverAgain = true
+        return recovery
+      }
+      recovery = (async () => {
+        let after = reset ? null : cursorRef.current
+        do {
+          const query = after ? `?after=${encodeURIComponent(after)}` : ""
+          const page = await request<ChatMessagePage>(`/v1/chat/rooms/${roomId}/messages${query}`)
+          setMessages((current) => {
+            const existingIds = new Set((reset ? [] : current).map((item) => item.id))
+            return [
+              ...(reset ? [] : current),
+              ...page.items.filter((item) => !existingIds.has(item.id)),
+            ]
+          })
+          reset = false
+          cursorRef.current = page.cursor
+          after = page.cursor
+          if (!page.hasMore) break
+        } while (!stopped)
+        await loadRooms()
+      })()
+        .catch((error) => {
+          if (!stopped) {
+            setMessage(error instanceof Error ? error.message : "채팅을 동기화하지 못했어요.")
+          }
+        })
+        .finally(() => {
+          recovery = null
+          if (recoverAgain && !stopped) {
+            recoverAgain = false
+            void recoverMessages()
+          }
+        })
+      return recovery
+    }
+
+    const connect = () => {
+      if (stopped) return
+      const socketUrl = new URL(`${apiUrl}/v1/chat/rooms/${roomId}/socket`)
+      socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:"
+      socket = new WebSocket(socketUrl)
+      socket.addEventListener("open", () => {
+        retryAttempt = 0
+        void recoverMessages()
+      })
+      socket.addEventListener("message", () => void recoverMessages())
+      socket.addEventListener("close", () => {
+        if (stopped) return
+        retryTimer = setTimeout(connect, Math.min(1000 * 2 ** retryAttempt++, 10_000))
+      })
+    }
+
+    void recoverMessages(true).finally(connect)
+    return () => {
+      stopped = true
+      if (retryTimer) clearTimeout(retryTimer)
+      socket?.close()
+    }
+  }, [loadRooms, roomId])
   async function send(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!roomId) return
@@ -1155,16 +1528,20 @@ function ChatView() {
               <p className="text-xs text-muted-foreground">
                 “{activeRoom.scoutContext.portfolioTitle}” · {activeRoom.scoutContext.roleName}
               </p>
-              <TrustActions
-                userId={activeRoom.user.userId}
-                onBlocked={() =>
-                  setRooms((current) =>
-                    current.map((room) =>
-                      room.id === activeRoom.id ? { ...room, isReadOnly: true } : room,
-                    ),
-                  )
-                }
-              />
+              {activeRoom.user.isDeleted ? (
+                <p className="mt-2 text-xs text-muted-foreground">삭제된 계정과의 대화예요.</p>
+              ) : (
+                <TrustActions
+                  userId={activeRoom.user.userId}
+                  onBlocked={() =>
+                    setRooms((current) =>
+                      current.map((room) =>
+                        room.id === activeRoom.id ? { ...room, isReadOnly: true } : room,
+                      ),
+                    )
+                  }
+                />
+              )}
             </header>
             <div className="flex-1 space-y-2 overflow-y-auto p-4">
               {messages.map((message) => (
@@ -1179,6 +1556,14 @@ function ChatView() {
                         : "bg-muted",
                   )}
                 >
+                  <span className="sr-only">
+                    {message.type === "system"
+                      ? "시스템 안내"
+                      : message.isMine
+                        ? "내 메시지"
+                        : `${activeRoom.user.nickname} 메시지`}
+                    .
+                  </span>
                   {message.assetUrl ? (
                     <img
                       src={message.assetUrl}
@@ -1188,12 +1573,20 @@ function ChatView() {
                   ) : message.body ? (
                     <MessageBody body={message.body} />
                   ) : null}
+                  <time className="mt-1 block text-[11px]" dateTime={message.createdAt}>
+                    {new Date(message.createdAt).toLocaleTimeString("ko-KR", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </time>
                 </div>
               ))}
             </div>
             {activeRoom.isReadOnly ? (
               <p className="border-t p-4 text-center text-sm text-muted-foreground">
-                차단된 관계라 이전 대화만 볼 수 있어요.
+                {activeRoom.user.isDeleted
+                  ? "삭제된 계정과의 이전 대화만 볼 수 있어요."
+                  : "차단된 관계라 이전 대화만 볼 수 있어요."}
               </p>
             ) : (
               <form className="grid gap-2 border-t p-3" onSubmit={send}>
@@ -1226,16 +1619,22 @@ function ChatView() {
             {activeRoom.canReview ? (
               <div className="flex items-center justify-center gap-2 border-t p-3 text-xs text-muted-foreground">
                 <span>이번 소통은 어땠나요?</span>
-                <button type="button" onClick={() => manner("positive")}>
+                <button className="min-h-11 px-2" type="button" onClick={() => manner("positive")}>
                   좋았어요
                 </button>
-                <button type="button" onClick={() => manner("negative")}>
+                <button className="min-h-11 px-2" type="button" onClick={() => manner("negative")}>
                   아쉬웠어요
                 </button>
               </div>
             ) : null}
             {message ? (
-              <p className="border-t p-3 text-center text-xs text-muted-foreground">{message}</p>
+              <p
+                className="border-t p-3 text-center text-xs text-muted-foreground"
+                role="status"
+                aria-live="polite"
+              >
+                {message}
+              </p>
             ) : null}
           </>
         ) : (
@@ -1344,7 +1743,11 @@ function TrustActions({ userId, onBlocked }: { userId: string; onBlocked?: () =>
       <Button type="button" variant="outline" onClick={reportUser}>
         신고
       </Button>
-      {message ? <span className="text-xs text-muted-foreground">{message}</span> : null}
+      {message ? (
+        <span className="text-xs text-muted-foreground" role="status" aria-live="polite">
+          {message}
+        </span>
+      ) : null}
     </div>
   )
 }
@@ -1353,14 +1756,31 @@ export function ProductWorkspace({ view }: { view: WorkspaceView }) {
   const [session, setSession] = useState<SessionUser | null | undefined>()
   const [profile, setProfile] = useState<ProfileSummary | null>(null)
   const [roles, setRoles] = useState<Role[]>([])
+  const [unreadCounts, setUnreadCounts] = useState<UnreadCounts>({ chat: 0, requests: 0 })
   const [error, setError] = useState<string>()
+  const refreshUnread = useCallback(async () => {
+    const next = await request<UnreadCounts>("/v1/me/unread-counts")
+    setUnreadCounts(next)
+  }, [])
+  const updateChatUnread = useCallback((chat: number) => {
+    setUnreadCounts((current) => ({ ...current, chat }))
+  }, [])
   const load = useCallback(async () => {
     setError(undefined)
     try {
       const currentSession = await request<SessionUser | null>("/v1/auth/session")
-      const availableRoles = await request<Role[]>("/v1/discovery/roles")
+      if (!currentSession) {
+        setSession(null)
+        return
+      }
+      const [availableRoles, nextProfile, nextUnread] = await Promise.all([
+        request<Role[]>("/v1/discovery/roles"),
+        request<ProfileSummary | null>("/v1/me"),
+        request<UnreadCounts>("/v1/me/unread-counts"),
+      ])
       setRoles(availableRoles)
-      if (currentSession) setProfile(await request<ProfileSummary | null>("/v1/me"))
+      setProfile(nextProfile)
+      setUnreadCounts(nextUnread)
       setSession(currentSession)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "화면을 불러오지 못했어요.")
@@ -1369,6 +1789,18 @@ export function ProductWorkspace({ view }: { view: WorkspaceView }) {
   useEffect(() => {
     void load()
   }, [load])
+  useEffect(() => {
+    if (!session) return
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshUnread()
+    }
+    const interval = window.setInterval(refreshWhenVisible, 30_000)
+    document.addEventListener("visibilitychange", refreshWhenVisible)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener("visibilitychange", refreshWhenVisible)
+    }
+  }, [refreshUnread, session])
   const content = useMemo(() => {
     if (session === undefined && !error) return <LoadingPanel />
     if (error) return <ErrorPanel message={error} retry={load} />
@@ -1378,20 +1810,23 @@ export function ProductWorkspace({ view }: { view: WorkspaceView }) {
       return <OnboardingView initialProfile={profile} roles={roles} />
     if (view === "profile") return <ProfileView profile={profile} roles={roles} />
     if (view === "scout") return <ScoutView roles={roles} />
-    if (view === "requests") return <RequestsView />
-    if (view === "chat") return <ChatView />
+    if (view === "requests") return <RequestsView onRead={refreshUnread} />
+    if (view === "chat") return <ChatView onUnreadChange={updateChatUnread} />
     return <NotificationsView />
-  }, [error, load, profile, roles, session, view])
+  }, [error, load, profile, refreshUnread, roles, session, updateChatUnread, view])
   return (
     <>
-      <WorkspaceNav isAuthenticated={Boolean(session)} view={view} />
+      <WorkspaceNav isAuthenticated={Boolean(session)} unreadCounts={unreadCounts} view={view} />
       {content}
     </>
   )
 }
 
 export function PublicProfileRoute() {
-  const handle = window.location.pathname.match(/^\/profiles\/([^/]+)\/?$/)?.[1]
+  const handle =
+    window.location.pathname.match(/^\/profiles\/([^/]+)\/?$/)?.[1] ??
+    new URLSearchParams(window.location.search).get("handle") ??
+    undefined
   const [profile, setProfile] = useState<PublicProfile | null | undefined>()
   const [error, setError] = useState<string>()
 
@@ -1401,7 +1836,10 @@ export function PublicProfileRoute() {
       return
     }
     request<PublicProfile | null>(`/v1/profiles/${encodeURIComponent(handle)}`)
-      .then(setProfile)
+      .then((nextProfile) => {
+        setProfile(nextProfile)
+        if (nextProfile) trackProductEvent("profile_viewed")
+      })
       .catch((caught) =>
         setError(caught instanceof Error ? caught.message : "프로필을 불러오지 못했어요."),
       )
@@ -1444,7 +1882,7 @@ export function PublicProfileRoute() {
         {profile.portfolios.map((portfolio) => (
           <a
             key={portfolio.id}
-            href={`/portfolios/${portfolio.id}`}
+            href={`/portfolio?portfolio=${encodeURIComponent(portfolio.id)}`}
             className="rounded-2xl border bg-card p-5 outline-none transition hover:border-primary/30 focus-visible:ring-[3px] focus-visible:ring-ring/50"
           >
             <strong>{portfolio.title}</strong>

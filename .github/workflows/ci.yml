@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  push:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -9,33 +11,20 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: scouty
-          POSTGRES_PASSWORD: scouty
-          POSTGRES_USER: scouty
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U scouty -d scouty"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 15
-    env:
-      DATABASE_URL: postgresql://scouty:scouty@localhost:5432/scouty?schema=public
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
       - run: bun ci
       - run: bun run db:generate
-      - run: bun run db:deploy
+      - run: bun run db:migrate
+      - run: bun run test:integration
       - run: bun run lint
       - run: bun run typecheck
       - run: bun run test
       - run: bun run build
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test:e2e
       - name: Build PDF processing container
         run: docker build --file apps/api/container/Dockerfile apps/api/container

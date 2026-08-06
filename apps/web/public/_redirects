@@ -1,3 +1,3 @@
-/portfolios/* /portfolio 200
-/profiles/* /profile-public 200
-/chat/* /chat 200
+/portfolios/:portfolioId /portfolio?portfolio=:portfolioId 200
+/profiles/:handle /profile-public?handle=:handle 200
+/chat/:roomId /chat?room=:roomId 200

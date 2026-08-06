@@ -19,7 +19,7 @@ const { description = "결과물로 시작하는 Scouty", title } = Astro.props
       <a href="/feed" class="text-sm font-semibold text-muted-foreground hover:text-foreground">프로젝트 둘러보기</a>
     </div>
   </header>
-  <main class="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 sm:py-12">
+  <main id="main-content" class="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 sm:py-12" tabindex="-1">
     <slot />
   </main>
 </AppLayout>
