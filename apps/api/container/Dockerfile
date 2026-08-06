@@ -6,7 +6,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY package.json ./
-RUN bun install --frozen-lockfile=false
+RUN bun install --production
 COPY server.ts ./
 
 USER bun

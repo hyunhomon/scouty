@@ -1,7 +1,6 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "scouty-web",
-  "account_id": "d09b11497e0618d6dceff0559855a7b2",
   "pages_build_output_dir": "./dist",
   "compatibility_date": "2026-08-06"
 }
