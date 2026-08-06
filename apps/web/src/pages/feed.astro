@@ -1,0 +1,24 @@
+---
+import { DiscoveryFeed } from "@/components/DiscoveryFeed"
+import { buttonVariants } from "@/components/ui/button"
+import AppLayout from "@/layouts/AppLayout.astro"
+---
+
+<AppLayout
+  title="프로젝트 피드 — Scouty"
+  description="역할과 결과물로 함께할 사람을 발견하는 Scouty 프로젝트 피드"
+>
+  <header class="sticky top-0 z-20 border-b bg-background/90 backdrop-blur">
+    <div class="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-4 sm:px-6">
+      <a href="/" class="flex items-center gap-2.5" aria-label="Scouty 홈">
+        <img src="/brand/scouty.png" alt="" width="36" height="36" class="size-9 rounded-xl" />
+        <span class="text-lg font-extrabold tracking-tight">Scouty</span>
+      </a>
+      <a class={buttonVariants({ variant: "ghost", size: "sm" })} href="/">서비스 소개</a>
+    </div>
+  </header>
+
+  <main class="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
+    <DiscoveryFeed client:load />
+  </main>
+</AppLayout>
