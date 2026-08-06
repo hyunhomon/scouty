@@ -14,9 +14,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@cloudflare/containers": "^0.3.7",
     "@elysia/openapi": "^1.4.15",
     "@elysiajs/cors": "^1.4.2",
     "@scouty/db": "workspace:*",
+    "aws4fetch": "^1.0.20",
     "elysia": "^1.4.29"
   }
 }

@@ -11,7 +11,12 @@
     "enabled": true
   },
   "vars": {
-    "CORS_ORIGINS": "https://greeney.life,http://localhost:4321"
+    "API_ORIGIN": "https://api.greeney.life",
+    "COOKIE_DOMAIN": ".greeney.life",
+    "CORS_ORIGINS": "https://greeney.life,http://localhost:4321",
+    "R2_ACCOUNT_ID": "d09b11497e0618d6dceff0559855a7b2",
+    "R2_BUCKET_NAME": "scouty-assets",
+    "WEB_ORIGIN": "https://greeney.life"
   },
   "routes": [{ "pattern": "api.greeney.life", "custom_domain": true }],
   "d1_databases": [
@@ -28,6 +33,51 @@
       "bucket_name": "scouty-assets"
     }
   ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "PORTFOLIO_PROCESSING",
+        "queue": "scouty-portfolio-processing"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "scouty-portfolio-processing",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "scouty-portfolio-processing-dlq"
+      }
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHAT_ROOMS",
+        "class_name": "ChatRoomHub"
+      },
+      {
+        "name": "MEDIA_PROCESSOR",
+        "class_name": "PortfolioMediaContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ChatRoomHub", "PortfolioMediaContainer"]
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "PortfolioMediaContainer",
+      "image": "./container/Dockerfile",
+      "max_instances": 3
+    }
+  ],
+  "triggers": {
+    "crons": ["0 * * * *", "15 3 * * *"]
+  },
   "dev": {
     "port": 8787
   }

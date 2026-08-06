@@ -2,20 +2,20 @@
 
 | 항목 | 내용 |
 |---|---|
-| 상태 | 스캐폴딩 목표 계약 |
+| 상태 | 현재 개발 계약 |
 | 패키지 관리 | Bun workspace |
 | 포맷·린트 | Biome |
 | 테스트 | Vitest, Workers Vitest pool |
 
-이 문서의 명령과 디렉터리는 다음 스캐폴딩에서 구현할 목표다. 실제 구조가 생긴 뒤 실행 결과와 함께 갱신한다.
+이 문서의 명령과 디렉터리는 현재 저장소에서 동작하는 개발 계약이다. 구조나 명령을 바꾸면 이 문서와 CI를 함께 갱신한다.
 
-## 1. 목표 구조
+## 1. 저장소 구조
 
 ```text
 scouty/
 ├─ apps/
 │  ├─ web/             # Astro static Pages app
-│  └─ api/             # Elysia Cloudflare Worker
+│  └─ api/             # Elysia Worker, Durable Objects, PDF 처리 Container
 ├─ packages/
 │  └─ db/              # Prisma schema, client, migrations, seed
 ├─ docs/
@@ -31,7 +31,7 @@ scouty/
 - UI 컴포넌트는 소비자가 하나인 동안 `apps/web` 안에 둔다.
 - 프론트가 API 타입을 가져올 때 runtime 코드를 포함하지 않도록 `import type`을 사용한다.
 
-## 2. 목표 명령
+## 2. 공통 명령
 
 | 명령 | 역할 |
 |---|---|

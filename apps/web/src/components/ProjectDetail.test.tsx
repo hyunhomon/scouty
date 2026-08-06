@@ -90,12 +90,15 @@ describe("ProjectDetail", () => {
     expect(screen.getByRole("link", { name: "피드로 돌아가기" })).toHaveAttribute("href", "/feed")
   })
 
-  it("disables the scout action until authentication is available", async () => {
+  it("links the scout action into the authenticated proposal flow", async () => {
     render(<ProjectDetail client={createClient()} portfolioId="portfolio-1" />)
 
-    expect(await screen.findByRole("button", { name: "스카우트 제안" })).toBeDisabled()
+    expect(await screen.findByRole("link", { name: "스카우트 제안" })).toHaveAttribute(
+      "href",
+      "/scout?portfolio=portfolio-1",
+    )
     expect(
-      screen.getByText("로그인 기능과 함께 제안 보내기가 열릴 예정이에요."),
+      screen.getByText("로그인 후 구체적인 역할과 프로젝트 정보를 담아 제안할 수 있어요."),
     ).toBeInTheDocument()
   })
 })

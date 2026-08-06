@@ -27,6 +27,7 @@ export type DiscoveryCursor = {
 
 export type ListDiscoveryPortfoliosInput = {
   cursor?: DiscoveryCursor | undefined
+  excludeAuthorIds?: string[] | undefined
   limit: number
   query?: string | undefined
   role?: string | undefined
@@ -270,6 +271,11 @@ export class D1DiscoveryRepository implements DiscoveryRepository {
   async listPortfolios(input: ListDiscoveryPortfoliosInput) {
     const conditions: string[] = []
     const bindings: Array<number | string> = []
+
+    if (input.excludeAuthorIds && input.excludeAuthorIds.length > 0) {
+      conditions.push(`p.author_id NOT IN (${input.excludeAuthorIds.map(() => "?").join(", ")})`)
+      bindings.push(...input.excludeAuthorIds)
+    }
 
     if (input.role) {
       conditions.push(

@@ -1,10 +1,10 @@
 import type { DiscoveryPortfolioDetail, DiscoveryRole } from "@scouty/api"
-import { ArrowLeft, FileImage } from "lucide-react"
+import { ArrowLeft, Bookmark, FileImage } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { api } from "@/lib/api"
+import { api, apiUrl } from "@/lib/api"
 
 export type ProjectDetailClient = {
   getPortfolio(portfolioId: string): Promise<DiscoveryPortfolioDetail | null>
@@ -62,6 +62,44 @@ function DetailSkeleton() {
       <div className="mt-4 h-5 w-1/3 animate-pulse rounded bg-muted" />
       <div className="mt-8 aspect-[3/4] animate-pulse rounded-2xl bg-muted" />
     </div>
+  )
+}
+
+function BookmarkButton({ portfolioId }: { portfolioId: string }) {
+  const [isBookmarked, setIsBookmarked] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+
+  useEffect(() => {
+    fetch(`${apiUrl}/v1/me/bookmarks`, { credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) return
+        const data = (await response.json()) as Array<{ id: string }>
+        setIsBookmarked(data.some((portfolio) => portfolio.id === portfolioId))
+      })
+      .catch(() => undefined)
+  }, [portfolioId])
+
+  async function toggle() {
+    setIsSaving(true)
+    const response = await fetch(`${apiUrl}/v1/me/bookmarks/${encodeURIComponent(portfolioId)}`, {
+      credentials: "include",
+      method: isBookmarked ? "DELETE" : "PUT",
+    })
+    setIsSaving(false)
+    if (response.status === 401) {
+      window.location.assign(
+        `${apiUrl}/v1/auth/google/start?returnTo=${encodeURIComponent(window.location.pathname)}`,
+      )
+      return
+    }
+    if (response.ok) setIsBookmarked((current) => !current)
+  }
+
+  return (
+    <Button type="button" variant="outline" disabled={isSaving} onClick={toggle}>
+      <Bookmark aria-hidden="true" fill={isBookmarked ? "currentColor" : "none"} />
+      {isBookmarked ? "저장됨" : "저장"}
+    </Button>
   )
 }
 
@@ -155,10 +193,13 @@ export function ProjectDetail({
       <header>
         <div className="flex items-center gap-3">
           <Avatar avatarUrl={portfolio.author.avatarUrl} nickname={portfolio.author.nickname} />
-          <div className="min-w-0">
+          <a
+            href={`/profiles/${encodeURIComponent(portfolio.author.handle)}`}
+            className="min-w-0 rounded outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          >
             <p className="truncate font-bold">{portfolio.author.nickname}</p>
             <p className="truncate text-sm text-muted-foreground">@{portfolio.author.handle}</p>
-          </div>
+          </a>
         </div>
 
         <h1
@@ -177,6 +218,9 @@ export function ProjectDetail({
           {portfolio.tags.map((tag) => (
             <span key={tag}>#{tag}</span>
           ))}
+        </div>
+        <div className="mt-5">
+          <BookmarkButton portfolioId={portfolio.id} />
         </div>
       </header>
 
@@ -243,12 +287,18 @@ export function ProjectDetail({
           </div>
 
           <div className="mt-5 border-t pt-5">
-            <Button type="button" className="w-full" disabled>
-              {isClosed ? "지금은 제안을 받지 않아요" : "스카우트 제안"}
-            </Button>
+            {isClosed ? (
+              <Button type="button" className="w-full" disabled>
+                지금은 제안을 받지 않아요
+              </Button>
+            ) : (
+              <Button asChild className="w-full">
+                <a href={`/scout?portfolio=${encodeURIComponent(portfolio.id)}`}>스카우트 제안</a>
+              </Button>
+            )}
             {!isClosed ? (
               <p className="mt-2 text-center text-xs text-muted-foreground">
-                로그인 기능과 함께 제안 보내기가 열릴 예정이에요.
+                로그인 후 구체적인 역할과 프로젝트 정보를 담아 제안할 수 있어요.
               </p>
             ) : null}
           </div>
