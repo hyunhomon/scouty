@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers"
 import { createPrismaClient } from "@scouty/db"
 import { createApp } from "./app"
 import { ChatRoomHub } from "./chat-room"
-import { ApiError, type CompletePortfolioProcessingInput } from "./core"
+import { ApiError, type CompletePortfolioProcessingInput, type ProductEvent } from "./core"
 import { PrismaCoreService } from "./core-prisma"
 import { D1DiscoveryRepository } from "./discovery"
 import { PortfolioMediaContainer } from "./media-container"
@@ -10,6 +10,7 @@ import { checkReadiness } from "./readiness"
 import { R2UploadSigner } from "./security"
 
 const database = env.HYPERDRIVE ? createPrismaClient(env.HYPERDRIVE.connectionString) : null
+const analytics = (env as typeof env & { ANALYTICS: AnalyticsEngineDataset }).ANALYTICS
 
 const signer =
   env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY
@@ -72,6 +73,9 @@ const core = database
       processingQueue: env.PORTFOLIO_PROCESSING,
       processor,
       signer,
+      track: (event: ProductEvent) => {
+        analytics.writeDataPoint({ blobs: [event], doubles: [1] })
+      },
     })
   : undefined
 
@@ -119,6 +123,6 @@ export default {
   },
   async scheduled(controller: ScheduledController) {
     if (controller.cron === "15 3 * * *") await core?.rebuildDiscoveryProjection()
-    else await core?.recomputeScoutStats()
+    else if (core) await Promise.all([core.recomputeScoutStats(), core.purgeDeletedAssets()])
   },
 }

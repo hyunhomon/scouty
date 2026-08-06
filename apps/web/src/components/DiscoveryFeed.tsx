@@ -4,6 +4,7 @@ import { type SubmitEvent, useEffect, useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { trackProductEvent } from "@/lib/analytics"
 import { api, apiUrl } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -152,6 +153,8 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
   const [roleError, setRoleError] = useState(false)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [loadMoreError, setLoadMoreError] = useState(false)
+
+  useEffect(() => trackProductEvent("feed_viewed"), [])
 
   useEffect(() => {
     let active = true

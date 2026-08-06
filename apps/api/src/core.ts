@@ -124,12 +124,13 @@ export type ScoutRequestSummary = {
   createdAt: string
   direction: "received" | "sent"
   id: string
+  isUnread: boolean
   projectSummary: string
   projectTitle: string
   requestedRole: { name: string; slug: string }
   sourcePortfolio: { id: string; title: string }
   status: ScoutRequestStatus
-  user: { handle: string; nickname: string; userId: string }
+  user: { handle: string; isDeleted: boolean; nickname: string; userId: string }
 }
 
 export type ChatRoomSummary = {
@@ -138,7 +139,7 @@ export type ChatRoomSummary = {
   isReadOnly: boolean
   lastMessage: { body: string | null; createdAt: string; type: "image" | "system" | "text" } | null
   scoutContext: { portfolioTitle: string; requestId: string; roleName: string }
-  user: { handle: string; nickname: string; userId: string }
+  user: { handle: string; isDeleted: boolean; nickname: string; userId: string }
   unreadCount: number
 }
 
@@ -150,6 +151,38 @@ export type ChatMessage = {
   isMine: boolean
   type: "image" | "system" | "text"
 }
+
+export type ChatMessagePage = {
+  cursor: string | null
+  hasMore: boolean
+  items: ChatMessage[]
+}
+
+export type UnreadCounts = {
+  chat: number
+  requests: number
+}
+
+export type ProductEvent =
+  | "account_deleted"
+  | "bookmark_added"
+  | "bookmark_removed"
+  | "chat_message_sent"
+  | "feed_viewed"
+  | "manner_submitted"
+  | "portfolio_processing_failed"
+  | "portfolio_processing_succeeded"
+  | "portfolio_published"
+  | "portfolio_upload_started"
+  | "portfolio_viewed"
+  | "profile_completed"
+  | "profile_viewed"
+  | "report_submitted"
+  | "scout_accepted"
+  | "scout_canceled"
+  | "scout_declined"
+  | "scout_sent"
+  | "signed_up"
 
 export type NotificationSummary = {
   createdAt: string
@@ -223,6 +256,7 @@ export interface CoreService {
   ): Promise<AssetUploadTicket>
   createScoutRequest(userId: string, input: CreateScoutRequestInput): Promise<{ id: string }>
   createSession(userId: string): Promise<{ expiresAt: Date; token: string }>
+  deleteAccount(userId: string): Promise<void>
   deleteSession(token: string): Promise<void>
   getMe(userId: string): Promise<ProfileSummary | null>
   getAssetAccess(
@@ -230,8 +264,9 @@ export interface CoreService {
     assetId: string,
   ): Promise<{ mimeType: string; storageKey: string } | null>
   getPublicProfile(handle: string): Promise<PublicProfile | null>
+  getUnreadCounts(userId: string): Promise<UnreadCounts>
   listBookmarks(userId: string): Promise<PortfolioSummary[]>
-  listChatMessages(userId: string, roomId: string): Promise<ChatMessage[]>
+  listChatMessages(userId: string, roomId: string, after?: string): Promise<ChatMessagePage>
   listChatRooms(userId: string): Promise<ChatRoomSummary[]>
   listNotifications(userId: string): Promise<NotificationSummary[]>
   listExcludedDiscoveryAuthors(userId: string): Promise<string[]>
@@ -246,6 +281,7 @@ export interface CoreService {
   ): Promise<void>
   moderatePortfolio(userId: string, portfolioId: string): Promise<void>
   publishPortfolio(userId: string, portfolioId: string): Promise<void>
+  purgeDeletedAssets(): Promise<void>
   removePortfolioVideo(userId: string, portfolioId: string): Promise<void>
   retryPortfolio(userId: string, portfolioId: string): Promise<void>
   report(
@@ -280,6 +316,7 @@ export interface CoreService {
     scoutRequestId: string,
     sentiment: MannerSentiment,
   ): Promise<void>
+  trackProductEvent(event: ProductEvent): Promise<void>
   transitionScoutRequest(
     userId: string,
     scoutRequestId: string,

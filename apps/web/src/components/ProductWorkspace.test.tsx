@@ -66,6 +66,9 @@ describe("ProductWorkspace", () => {
             userId: "user-1",
           })
         }
+        if (path === "/v1/me/unread-counts") {
+          return Response.json({ chat: 0, requests: 0 })
+        }
         if (path === "/v1/me/portfolios") {
           return Response.json([
             {

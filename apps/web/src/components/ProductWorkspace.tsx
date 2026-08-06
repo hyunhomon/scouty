@@ -1,6 +1,7 @@
 import type {
   AssetUploadTicket,
   ChatMessage,
+  ChatMessagePage,
   ChatRoomSummary,
   NotificationSummary,
   PortfolioSummary,
@@ -10,6 +11,7 @@ import type {
   ScoutCandidate,
   ScoutRequestSummary,
   SessionUser,
+  UnreadCounts,
 } from "@scouty/api"
 import {
   Bell,
@@ -26,6 +28,7 @@ import { type SubmitEvent, useCallback, useEffect, useMemo, useRef, useState } f
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { trackProductEvent } from "@/lib/analytics"
 import { apiUrl } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -116,9 +119,11 @@ const navItems: Array<{
 
 function WorkspaceNav({
   isAuthenticated,
+  unreadCounts,
   view,
 }: {
   isAuthenticated: boolean
+  unreadCounts: UnreadCounts
   view: WorkspaceView
 }) {
   if (!isAuthenticated || view === "onboarding") return null
@@ -127,6 +132,12 @@ function WorkspaceNav({
       <div className="flex min-w-max gap-1 rounded-2xl border bg-card p-1.5">
         {navItems.map((item) => {
           const Icon = item.icon
+          const unreadCount =
+            item.view === "chat"
+              ? unreadCounts.chat
+              : item.view === "requests"
+                ? unreadCounts.requests
+                : 0
           return (
             <a
               key={item.view}
@@ -138,6 +149,15 @@ function WorkspaceNav({
               )}
             >
               <Icon aria-hidden="true" size={17} /> {item.label}
+              {unreadCount > 0 ? (
+                <Badge
+                  aria-label={`${item.label} 읽지 않음 ${unreadCount}개`}
+                  className="min-w-5 justify-center px-1.5"
+                  variant={view === item.view ? "secondary" : "default"}
+                >
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </Badge>
+              ) : null}
             </a>
           )
         })}
@@ -805,6 +825,8 @@ function PortfolioCard({
 function ProfileView({ profile, roles }: { profile: ProfileSummary; roles: Role[] }) {
   const [portfolios, setPortfolios] = useState<PortfolioSummary[]>([])
   const [bookmarks, setBookmarks] = useState<PortfolioSummary[]>([])
+  const [deleteConfirmation, setDeleteConfirmation] = useState("")
+  const [deleteError, setDeleteError] = useState<string>()
   const load = useCallback(async () => {
     const [projects, saved] = await Promise.all([
       request<PortfolioSummary[]>("/v1/me/portfolios"),
@@ -872,7 +894,42 @@ function ProfileView({ profile, roles }: { profile: ProfileSummary; roles: Role[
           ))}
         </div>
       </div>
-      <PortfolioUploader roles={roles} onCreated={load} />
+      <div className="grid content-start gap-6">
+        <PortfolioUploader roles={roles} onCreated={load} />
+        <Card className="rounded-2xl p-5 shadow-none">
+          <h2 className="font-extrabold">계정 설정</h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            계정을 삭제하면 공개 프로필과 프로젝트가 즉시 숨겨지고, 작성한 개인 콘텐츠는 익명화돼요.
+            이 작업은 되돌릴 수 없어요.
+          </p>
+          <label className="mt-4 grid gap-2 text-sm font-semibold">
+            삭제하려면 ‘탈퇴’를 입력해주세요.
+            <input
+              className={inputClass}
+              value={deleteConfirmation}
+              onChange={(event) => setDeleteConfirmation(event.target.value)}
+            />
+          </label>
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-3 text-destructive"
+            disabled={deleteConfirmation !== "탈퇴"}
+            onClick={async () => {
+              setDeleteError(undefined)
+              try {
+                await request("/v1/me/account", { method: "DELETE" })
+                window.location.assign("/feed")
+              } catch (error) {
+                setDeleteError(error instanceof Error ? error.message : "계정을 삭제하지 못했어요.")
+              }
+            }}
+          >
+            계정 삭제
+          </Button>
+          {deleteError ? <p className="mt-3 text-xs text-destructive">{deleteError}</p> : null}
+        </Card>
+      </div>
     </div>
   )
 }
@@ -1142,13 +1199,18 @@ function ScoutView({ roles }: { roles: Role[] }) {
   )
 }
 
-function RequestsView() {
+function RequestsView({ onRead }: { onRead: () => Promise<void> }) {
   const [direction, setDirection] = useState<"received" | "sent">("received")
   const [items, setItems] = useState<ScoutRequestSummary[]>([])
   const load = useCallback(
     () =>
-      request<ScoutRequestSummary[]>(`/v1/scout/requests?direction=${direction}`).then(setItems),
-    [direction],
+      request<ScoutRequestSummary[]>(`/v1/scout/requests?direction=${direction}`).then(
+        async (next) => {
+          setItems(next)
+          await onRead()
+        },
+      ),
+    [direction, onRead],
   )
   useEffect(() => {
     void load()
@@ -1188,7 +1250,10 @@ function RequestsView() {
                 </p>
                 <h2 className="mt-1 font-extrabold">{item.projectTitle}</h2>
               </div>
-              <Badge variant="secondary">{item.status}</Badge>
+              <div className="flex items-center gap-2">
+                {item.isUnread ? <Badge>새 제안</Badge> : null}
+                <Badge variant="secondary">{item.status}</Badge>
+              </div>
             </div>
             <p className="mt-3 text-sm leading-6">{item.projectSummary}</p>
             <p className="mt-3 text-xs text-muted-foreground">
@@ -1242,37 +1307,99 @@ function MessageBody({ body }: { body: string }) {
   return content
 }
 
-function ChatView() {
+function ChatView({ onUnreadChange }: { onUnreadChange: (count: number) => void }) {
   const [rooms, setRooms] = useState<ChatRoomSummary[]>([])
   const [roomId, setRoomId] = useState(
     () => window.location.pathname.match(/^\/chat\/([^/]+)/)?.[1],
   )
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [message, setMessage] = useState<string>()
+  const cursorRef = useRef<string | null>(null)
   const loadRooms = useCallback(
     () =>
       request<ChatRoomSummary[]>("/v1/chat/rooms").then((next) => {
         setRooms(next)
         setRoomId((current) => current ?? next[0]?.id)
+        onUnreadChange(next.reduce((total, room) => total + room.unreadCount, 0))
       }),
-    [],
+    [onUnreadChange],
   )
   useEffect(() => {
     void loadRooms()
   }, [loadRooms])
   useEffect(() => {
     if (!roomId) return
-    const loadMessages = () =>
-      request<ChatMessage[]>(`/v1/chat/rooms/${roomId}/messages`).then(setMessages)
-    void loadMessages()
-    const socketUrl = new URL(`${apiUrl}/v1/chat/rooms/${roomId}/socket`)
-    socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:"
-    const socket = new WebSocket(socketUrl)
-    socket.addEventListener("message", () => {
-      void loadMessages()
-    })
-    return () => socket.close()
-  }, [roomId])
+    let retryAttempt = 0
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let socket: WebSocket | undefined
+    let stopped = false
+    let recoverAgain = false
+    let recovery: Promise<void> | null = null
+    cursorRef.current = null
+    setMessages([])
+
+    const recoverMessages = (reset = false): Promise<void> => {
+      if (recovery) {
+        recoverAgain = true
+        return recovery
+      }
+      recovery = (async () => {
+        let after = reset ? null : cursorRef.current
+        do {
+          const query = after ? `?after=${encodeURIComponent(after)}` : ""
+          const page = await request<ChatMessagePage>(`/v1/chat/rooms/${roomId}/messages${query}`)
+          setMessages((current) => {
+            const existingIds = new Set((reset ? [] : current).map((item) => item.id))
+            return [
+              ...(reset ? [] : current),
+              ...page.items.filter((item) => !existingIds.has(item.id)),
+            ]
+          })
+          reset = false
+          cursorRef.current = page.cursor
+          after = page.cursor
+          if (!page.hasMore) break
+        } while (!stopped)
+        await loadRooms()
+      })()
+        .catch((error) => {
+          if (!stopped) {
+            setMessage(error instanceof Error ? error.message : "채팅을 동기화하지 못했어요.")
+          }
+        })
+        .finally(() => {
+          recovery = null
+          if (recoverAgain && !stopped) {
+            recoverAgain = false
+            void recoverMessages()
+          }
+        })
+      return recovery
+    }
+
+    const connect = () => {
+      if (stopped) return
+      const socketUrl = new URL(`${apiUrl}/v1/chat/rooms/${roomId}/socket`)
+      socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:"
+      socket = new WebSocket(socketUrl)
+      socket.addEventListener("open", () => {
+        retryAttempt = 0
+        void recoverMessages()
+      })
+      socket.addEventListener("message", () => void recoverMessages())
+      socket.addEventListener("close", () => {
+        if (stopped) return
+        retryTimer = setTimeout(connect, Math.min(1000 * 2 ** retryAttempt++, 10_000))
+      })
+    }
+
+    void recoverMessages(true).finally(connect)
+    return () => {
+      stopped = true
+      if (retryTimer) clearTimeout(retryTimer)
+      socket?.close()
+    }
+  }, [loadRooms, roomId])
   async function send(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!roomId) return
@@ -1374,16 +1501,20 @@ function ChatView() {
               <p className="text-xs text-muted-foreground">
                 “{activeRoom.scoutContext.portfolioTitle}” · {activeRoom.scoutContext.roleName}
               </p>
-              <TrustActions
-                userId={activeRoom.user.userId}
-                onBlocked={() =>
-                  setRooms((current) =>
-                    current.map((room) =>
-                      room.id === activeRoom.id ? { ...room, isReadOnly: true } : room,
-                    ),
-                  )
-                }
-              />
+              {activeRoom.user.isDeleted ? (
+                <p className="mt-2 text-xs text-muted-foreground">삭제된 계정과의 대화예요.</p>
+              ) : (
+                <TrustActions
+                  userId={activeRoom.user.userId}
+                  onBlocked={() =>
+                    setRooms((current) =>
+                      current.map((room) =>
+                        room.id === activeRoom.id ? { ...room, isReadOnly: true } : room,
+                      ),
+                    )
+                  }
+                />
+              )}
             </header>
             <div className="flex-1 space-y-2 overflow-y-auto p-4">
               {messages.map((message) => (
@@ -1572,14 +1703,29 @@ export function ProductWorkspace({ view }: { view: WorkspaceView }) {
   const [session, setSession] = useState<SessionUser | null | undefined>()
   const [profile, setProfile] = useState<ProfileSummary | null>(null)
   const [roles, setRoles] = useState<Role[]>([])
+  const [unreadCounts, setUnreadCounts] = useState<UnreadCounts>({ chat: 0, requests: 0 })
   const [error, setError] = useState<string>()
+  const refreshUnread = useCallback(async () => {
+    const next = await request<UnreadCounts>("/v1/me/unread-counts")
+    setUnreadCounts(next)
+  }, [])
+  const updateChatUnread = useCallback((chat: number) => {
+    setUnreadCounts((current) => ({ ...current, chat }))
+  }, [])
   const load = useCallback(async () => {
     setError(undefined)
     try {
       const currentSession = await request<SessionUser | null>("/v1/auth/session")
       const availableRoles = await request<Role[]>("/v1/discovery/roles")
       setRoles(availableRoles)
-      if (currentSession) setProfile(await request<ProfileSummary | null>("/v1/me"))
+      if (currentSession) {
+        const [nextProfile, nextUnread] = await Promise.all([
+          request<ProfileSummary | null>("/v1/me"),
+          request<UnreadCounts>("/v1/me/unread-counts"),
+        ])
+        setProfile(nextProfile)
+        setUnreadCounts(nextUnread)
+      }
       setSession(currentSession)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "화면을 불러오지 못했어요.")
@@ -1588,6 +1734,18 @@ export function ProductWorkspace({ view }: { view: WorkspaceView }) {
   useEffect(() => {
     void load()
   }, [load])
+  useEffect(() => {
+    if (!session) return
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshUnread()
+    }
+    const interval = window.setInterval(refreshWhenVisible, 30_000)
+    document.addEventListener("visibilitychange", refreshWhenVisible)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener("visibilitychange", refreshWhenVisible)
+    }
+  }, [refreshUnread, session])
   const content = useMemo(() => {
     if (session === undefined && !error) return <LoadingPanel />
     if (error) return <ErrorPanel message={error} retry={load} />
@@ -1597,13 +1755,13 @@ export function ProductWorkspace({ view }: { view: WorkspaceView }) {
       return <OnboardingView initialProfile={profile} roles={roles} />
     if (view === "profile") return <ProfileView profile={profile} roles={roles} />
     if (view === "scout") return <ScoutView roles={roles} />
-    if (view === "requests") return <RequestsView />
-    if (view === "chat") return <ChatView />
+    if (view === "requests") return <RequestsView onRead={refreshUnread} />
+    if (view === "chat") return <ChatView onUnreadChange={updateChatUnread} />
     return <NotificationsView />
-  }, [error, load, profile, roles, session, view])
+  }, [error, load, profile, refreshUnread, roles, session, updateChatUnread, view])
   return (
     <>
-      <WorkspaceNav isAuthenticated={Boolean(session)} view={view} />
+      <WorkspaceNav isAuthenticated={Boolean(session)} unreadCounts={unreadCounts} view={view} />
       {content}
     </>
   )
@@ -1620,7 +1778,10 @@ export function PublicProfileRoute() {
       return
     }
     request<PublicProfile | null>(`/v1/profiles/${encodeURIComponent(handle)}`)
-      .then(setProfile)
+      .then((nextProfile) => {
+        setProfile(nextProfile)
+        if (nextProfile) trackProductEvent("profile_viewed")
+      })
       .catch((caught) =>
         setError(caught instanceof Error ? caught.message : "프로필을 불러오지 못했어요."),
       )

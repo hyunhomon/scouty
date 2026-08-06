@@ -18,6 +18,7 @@ import {
 import {
   ApiError,
   type ChatMessage,
+  type ChatMessagePage,
   type ChatRoomSummary,
   type CompletePortfolioProcessingInput,
   type CoreService,
@@ -32,6 +33,7 @@ import {
   normalizeTags,
   type PortfolioSummary,
   type PortfolioUploadTicket,
+  type ProductEvent,
   type ProfileSummary,
   type PublicProfile,
   type ReportTargetType,
@@ -40,6 +42,7 @@ import {
   type ScoutRequestSummary,
   type ScoutStatus,
   type SessionUser,
+  type UnreadCounts,
   type UpdateProfileInput,
 } from "./core"
 import { createRandomToken, sha256 } from "./security"
@@ -50,6 +53,7 @@ type CoreDependencies = {
   database: ScoutyPrismaClient
   edgeDatabase: D1Database
   processingQueue: Queue<{ portfolioId: string; requestedAt: string }>
+  track?: ((event: ProductEvent) => void) | undefined
   processor?:
     | {
         inspectVideo(input: {
@@ -169,6 +173,29 @@ function prismaCode(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError ? error.code : null
 }
 
+type ChatCursor = { createdAt: string; id: string }
+
+function encodeChatCursor(cursor: ChatCursor) {
+  return btoa(JSON.stringify(cursor))
+}
+
+function decodeChatCursor(value: string): ChatCursor {
+  try {
+    const parsed = JSON.parse(atob(value)) as Partial<ChatCursor>
+    if (
+      typeof parsed.createdAt !== "string" ||
+      !Number.isFinite(new Date(parsed.createdAt).getTime()) ||
+      typeof parsed.id !== "string" ||
+      !/^[0-9a-f-]{36}$/i.test(parsed.id)
+    ) {
+      throw new Error("invalid cursor")
+    }
+    return { createdAt: parsed.createdAt, id: parsed.id }
+  } catch {
+    throw new ApiError(400, "INVALID_CHAT_CURSOR", "채팅 동기화 위치가 올바르지 않아요.")
+  }
+}
+
 function staggerCandidates(candidates: ScoutCandidate[]) {
   const remaining = [...candidates]
   const staggered: ScoutCandidate[] = []
@@ -188,6 +215,18 @@ function staggerCandidates(candidates: ScoutCandidate[]) {
 export class PrismaCoreService implements CoreService {
   constructor(private readonly dependencies: CoreDependencies) {}
 
+  private track(event: ProductEvent) {
+    try {
+      this.dependencies.track?.(event)
+    } catch {
+      // Product analytics must never block a user action.
+    }
+  }
+
+  async trackProductEvent(event: ProductEvent) {
+    this.track(event)
+  }
+
   private async assertFileSignature(storageKey: string, mimeType: string) {
     const object = await this.dependencies.assets.get(storageKey, {
       range: { length: 16, offset: 0 },
@@ -200,20 +239,55 @@ export class PrismaCoreService implements CoreService {
   }
 
   async signInWithOAuth(input: { email: string | null; provider: "google"; subject: string }) {
-    const user = await this.dependencies.database.user.upsert({
-      where: {
-        authProvider_authSubject: { authProvider: input.provider, authSubject: input.subject },
-      },
-      update: { email: input.email, status: UserStatus.ACTIVE },
-      create: {
-        authProvider: input.provider,
-        authSubject: input.subject,
-        email: input.email,
-        profile: { create: {} },
-        scoutStats: { create: {} },
-      },
-      include: { profile: true },
+    const identity = { authProvider: input.provider, authSubject: input.subject }
+    let existing = await this.dependencies.database.user.findUnique({
+      where: { authProvider_authSubject: identity },
     })
+    if (existing?.status === UserStatus.DELETED) {
+      throw new ApiError(403, "ACCOUNT_DELETED", "삭제된 계정이에요.")
+    }
+    if (existing?.status === UserStatus.SUSPENDED) {
+      throw new ApiError(403, "ACCOUNT_SUSPENDED", "이 계정은 현재 사용할 수 없어요.")
+    }
+    let isNewUser = false
+    let user: Prisma.UserGetPayload<{ include: { profile: true } }>
+    if (existing) {
+      user = await this.dependencies.database.user.update({
+        where: { id: existing.id },
+        data: { email: input.email },
+        include: { profile: true },
+      })
+    } else {
+      try {
+        user = await this.dependencies.database.user.create({
+          data: {
+            ...identity,
+            email: input.email,
+            profile: { create: {} },
+            scoutStats: { create: {} },
+          },
+          include: { profile: true },
+        })
+        isNewUser = true
+      } catch (error) {
+        if (prismaCode(error) !== "P2002") throw error
+        existing = await this.dependencies.database.user.findUnique({
+          where: { authProvider_authSubject: identity },
+        })
+        if (!existing) throw error
+        if (existing.status === UserStatus.DELETED) {
+          throw new ApiError(403, "ACCOUNT_DELETED", "삭제된 계정이에요.")
+        }
+        if (existing.status === UserStatus.SUSPENDED) {
+          throw new ApiError(403, "ACCOUNT_SUSPENDED", "이 계정은 현재 사용할 수 없어요.")
+        }
+        user = await this.dependencies.database.user.update({
+          where: { id: existing.id },
+          data: { email: input.email },
+          include: { profile: true },
+        })
+      }
+    }
 
     if (!user.profile) {
       await this.dependencies.database.userProfile.create({ data: { userId: user.id } })
@@ -223,6 +297,7 @@ export class PrismaCoreService implements CoreService {
       update: {},
       create: { userId: user.id },
     })
+    if (isNewUser) this.track("signed_up")
 
     return {
       email: user.email,
@@ -272,6 +347,101 @@ export class PrismaCoreService implements CoreService {
     })
   }
 
+  async deleteAccount(userId: string) {
+    const deletedAt = new Date()
+    const user = await this.dependencies.database.user.findFirst({
+      where: { id: userId, status: UserStatus.ACTIVE },
+      select: { id: true },
+    })
+    if (!user) throw new ApiError(404, "USER_NOT_FOUND", "계정을 찾을 수 없어요.")
+    await this.dependencies.edgeDatabase
+      .prepare("DELETE FROM discovery_portfolios WHERE author_id = ?")
+      .bind(userId)
+      .run()
+    await this.dependencies.database.$transaction(async (transaction) => {
+      await transaction.scoutRequest.updateMany({
+        where: {
+          status: DatabaseScoutRequestStatus.PENDING,
+          OR: [{ recipientId: userId }, { senderId: userId }],
+        },
+        data: { canceledAt: deletedAt, status: DatabaseScoutRequestStatus.CANCELED },
+      })
+      await transaction.scoutRequest.updateMany({
+        where: { senderId: userId },
+        data: {
+          estimatedPeriodText: "삭제된 계정",
+          message: "삭제된 메시지",
+          projectSummary: "삭제된 계정이 보낸 제안입니다.",
+          projectTitle: "삭제된 계정의 제안",
+          teamCompositionText: "삭제된 계정",
+          weeklyCommitmentText: "삭제된 계정",
+        },
+      })
+      await transaction.chatMessage.updateMany({
+        where: { senderId: userId },
+        data: { assetId: null, body: null, deletedAt },
+      })
+      await transaction.report.updateMany({
+        where: { reporterId: userId },
+        data: { description: null },
+      })
+      await transaction.portfolio.updateMany({
+        where: { authorId: userId },
+        data: { status: PortfolioStatus.ARCHIVED },
+      })
+      await transaction.asset.updateMany({
+        where: { ownerId: userId },
+        data: { status: AssetStatus.DELETED },
+      })
+      await transaction.userProfile.updateMany({
+        where: { userId },
+        data: {
+          avatarAssetId: null,
+          bio: null,
+          communicationPreference: null,
+          handle: null,
+          nickname: null,
+          profileCompletedAt: null,
+          scoutStatus: DatabaseScoutStatus.CLOSED,
+        },
+      })
+      await transaction.portfolioBookmark.deleteMany({ where: { userId } })
+      await transaction.userRole.deleteMany({ where: { userId } })
+      await transaction.userBlock.deleteMany({
+        where: { OR: [{ blockedId: userId }, { blockerId: userId }] },
+      })
+      await transaction.notification.deleteMany({ where: { userId } })
+      await transaction.session.deleteMany({ where: { userId } })
+      await transaction.user.update({
+        where: { id: userId },
+        data: {
+          authSubject: `deleted:${userId}:${crypto.randomUUID()}`,
+          deletedAt,
+          email: null,
+          status: UserStatus.DELETED,
+        },
+      })
+    })
+    await this.purgeDeletedAssets().catch(() => undefined)
+    this.track("account_deleted")
+  }
+
+  async purgeDeletedAssets() {
+    const assets = await this.dependencies.database.asset.findMany({
+      where: { purgedAt: null, status: AssetStatus.DELETED },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, storageKey: true },
+      take: 500,
+    })
+    if (assets.length > 0) {
+      await this.dependencies.assets.delete(assets.map((asset) => asset.storageKey))
+      await this.dependencies.database.asset.updateMany({
+        where: { id: { in: assets.map((asset) => asset.id) } },
+        data: { purgedAt: new Date() },
+      })
+    }
+  }
+
   async getMe(userId: string) {
     const profile = await this.dependencies.database.userProfile.findUnique({
       where: { userId },
@@ -300,9 +470,11 @@ export class PrismaCoreService implements CoreService {
       throw new ApiError(400, "INVALID_ROLES", "역할은 1~3개 선택해주세요.")
     }
 
+    let completedForFirstTime = false
     try {
       await this.dependencies.database.$transaction(async (transaction) => {
         const currentProfile = await transaction.userProfile.findUnique({ where: { userId } })
+        completedForFirstTime = !currentProfile?.profileCompletedAt
         const avatarAssetId =
           input.avatarAssetId === undefined ? currentProfile?.avatarAssetId : input.avatarAssetId
         if (!avatarAssetId) {
@@ -365,7 +537,6 @@ export class PrismaCoreService implements CoreService {
       }
       throw error
     }
-
     const publishedPortfolios = await this.dependencies.database.portfolio.findMany({
       where: { authorId: userId, status: PortfolioStatus.PUBLISHED },
       select: { id: true },
@@ -374,6 +545,7 @@ export class PrismaCoreService implements CoreService {
 
     const profile = await this.getMe(userId)
     if (!profile) throw new ApiError(503, "PROFILE_WRITE_FAILED", "프로필을 저장하지 못했어요.")
+    if (completedForFirstTime) this.track("profile_completed")
     return profile
   }
 
@@ -565,6 +737,7 @@ export class PrismaCoreService implements CoreService {
         url: videoUpload.url,
       })
     }
+    this.track("portfolio_upload_started")
     return { expiresAt: expiresAt.toISOString(), portfolioId, uploads }
   }
 
@@ -1027,6 +1200,7 @@ export class PrismaCoreService implements CoreService {
     if (isReplacement && portfolio.status === PortfolioStatus.PUBLISHED) {
       await this.projectPortfolio(portfolioId)
     }
+    this.track("portfolio_processing_succeeded")
   }
 
   async publishPortfolio(userId: string, portfolioId: string) {
@@ -1049,6 +1223,7 @@ export class PrismaCoreService implements CoreService {
       data: { publishedAt: new Date(), status: PortfolioStatus.PUBLISHED },
     })
     await this.projectPortfolio(portfolioId)
+    this.track("portfolio_published")
   }
 
   async retryPortfolio(userId: string, portfolioId: string) {
@@ -1201,11 +1376,13 @@ export class PrismaCoreService implements CoreService {
         update: {},
         create: { portfolioId, userId },
       })
+      this.track("bookmark_added")
       return
     }
     await this.dependencies.database.portfolioBookmark.deleteMany({
       where: { portfolioId, userId },
     })
+    this.track("bookmark_removed")
   }
 
   async listBookmarks(userId: string) {
@@ -1364,6 +1541,7 @@ export class PrismaCoreService implements CoreService {
             projectTitle: input.projectTitle.trim(),
             recipientId: source.authorId,
             requestedRoleId: requestedRole.id,
+            senderReadAt: new Date(),
             senderId: userId,
             sourcePortfolioId: source.id,
             sourcePortfolioTitleSnapshot: source.title,
@@ -1387,6 +1565,7 @@ export class PrismaCoreService implements CoreService {
             userId: source.authorId,
           },
         })
+        this.track("scout_sent")
         return { id: request.id }
       })
     } catch (error) {
@@ -1395,6 +1574,58 @@ export class PrismaCoreService implements CoreService {
       }
       throw error
     }
+  }
+
+  async getUnreadCounts(userId: string) {
+    const [requests, rooms] = await Promise.all([
+      this.dependencies.database.scoutRequest.count({
+        where: {
+          OR: [
+            { recipientId: userId, recipientReadAt: null },
+            { senderId: userId, senderReadAt: null },
+          ],
+        },
+      }),
+      this.dependencies.database.chatRoom.findMany({
+        where: {
+          scoutRequest: {
+            status: DatabaseScoutRequestStatus.ACCEPTED,
+            OR: [{ recipientId: userId }, { senderId: userId }],
+          },
+        },
+        include: {
+          readStates: {
+            where: { userId },
+            include: { lastReadMessage: true },
+            take: 1,
+          },
+        },
+      }),
+    ])
+    const chatCounts = await Promise.all(
+      rooms.map((room) => {
+        const lastRead = room.readStates[0]?.lastReadMessage
+        return this.dependencies.database.chatMessage.count({
+          where: {
+            deletedAt: null,
+            roomId: room.id,
+            senderId: { not: userId },
+            ...(lastRead
+              ? {
+                  OR: [
+                    { createdAt: { gt: lastRead.createdAt } },
+                    { createdAt: lastRead.createdAt, id: { gt: lastRead.id } },
+                  ],
+                }
+              : { createdAt: { gt: room.createdAt } }),
+          },
+        })
+      }),
+    )
+    return {
+      chat: chatCounts.reduce((total, count) => total + count, 0),
+      requests,
+    } satisfies UnreadCounts
   }
 
   async listScoutRequests(userId: string, direction: "received" | "sent") {
@@ -1408,14 +1639,16 @@ export class PrismaCoreService implements CoreService {
         sourcePortfolio: true,
       },
     })
-    return requests.flatMap((request) => {
+    const summaries = requests.flatMap((request) => {
       const other = direction === "received" ? request.sender : request.recipient
-      if (!other.profile?.handle || !other.profile.nickname) return []
+      const isDeleted = other.status !== UserStatus.ACTIVE
+      if (!isDeleted && (!other.profile?.handle || !other.profile.nickname)) return []
       return [
         {
           createdAt: request.createdAt.toISOString(),
           direction,
           id: request.id,
+          isUnread: direction === "received" ? !request.recipientReadAt : !request.senderReadAt,
           projectSummary: request.projectSummary,
           projectTitle: request.projectTitle,
           requestedRole: { name: request.requestedRole.name, slug: request.requestedRole.slug },
@@ -1425,13 +1658,22 @@ export class PrismaCoreService implements CoreService {
           },
           status: requestStatus(request.status),
           user: {
-            handle: other.profile.handle,
-            nickname: other.profile.nickname,
+            handle: other.profile?.handle ?? "",
+            isDeleted,
+            nickname: other.profile?.nickname ?? "삭제된 사용자",
             userId: other.id,
           },
         } satisfies ScoutRequestSummary,
       ]
     })
+    if (requests.length > 0) {
+      await this.dependencies.database.scoutRequest.updateMany({
+        where: { id: { in: requests.map((request) => request.id) } },
+        data:
+          direction === "received" ? { recipientReadAt: new Date() } : { senderReadAt: new Date() },
+      })
+    }
+    return summaries
   }
 
   async transitionScoutRequest(
@@ -1462,7 +1704,9 @@ export class PrismaCoreService implements CoreService {
         where: { id: scoutRequestId, status: DatabaseScoutRequestStatus.PENDING },
         data: {
           canceledAt: action === "cancel" ? new Date() : null,
+          recipientReadAt: isRecipientAction ? new Date() : null,
           respondedAt: isRecipientAction ? new Date() : null,
+          senderReadAt: action === "cancel" ? new Date() : null,
           status: nextStatus,
         },
       })
@@ -1532,6 +1776,13 @@ export class PrismaCoreService implements CoreService {
           },
         })
       }
+      this.track(
+        action === "accept"
+          ? "scout_accepted"
+          : action === "decline"
+            ? "scout_declined"
+            : "scout_canceled",
+      )
       return { chatRoomId, status: requestStatus(nextStatus) }
     })
   }
@@ -1546,8 +1797,12 @@ export class PrismaCoreService implements CoreService {
       },
       orderBy: { createdAt: "desc" },
       include: {
-        messages: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 },
-        readStates: { where: { userId }, take: 1 },
+        messages: {
+          where: { deletedAt: null },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          take: 1,
+        },
+        readStates: { where: { userId }, include: { lastReadMessage: true }, take: 1 },
         scoutRequest: {
           include: {
             mannerFeedback: { where: { fromUserId: userId }, take: 1 },
@@ -1562,18 +1817,29 @@ export class PrismaCoreService implements CoreService {
     for (const room of rooms) {
       const request = room.scoutRequest
       const other = request.senderId === userId ? request.recipient : request.sender
-      if (!other.profile?.handle || !other.profile.nickname) continue
+      const isDeleted = other.status !== UserStatus.ACTIVE
+      if (!isDeleted && (!other.profile?.handle || !other.profile.nickname)) continue
       const last = room.messages[0]
+      const lastRead = room.readStates[0]?.lastReadMessage
       const [unreadCount, participants, blocked] = await Promise.all([
         this.dependencies.database.chatMessage.count({
           where: {
-            createdAt: { gt: room.readStates[0]?.readAt ?? room.createdAt },
+            ...(lastRead
+              ? {
+                  OR: [
+                    { createdAt: { gt: lastRead.createdAt } },
+                    { createdAt: lastRead.createdAt, id: { gt: lastRead.id } },
+                  ],
+                }
+              : { createdAt: { gt: room.createdAt } }),
+            deletedAt: null,
             roomId: room.id,
             senderId: { not: userId },
           },
         }),
         this.dependencies.database.chatMessage.findMany({
           where: {
+            deletedAt: null,
             roomId: room.id,
             senderId: { not: null },
             type: { not: ChatMessageType.SYSTEM },
@@ -1594,11 +1860,13 @@ export class PrismaCoreService implements CoreService {
       const participantIds = new Set(participants.map(({ senderId }) => senderId))
       summaries.push({
         canReview:
+          !isDeleted &&
+          !blocked &&
           room.scoutRequest.mannerFeedback.length === 0 &&
           participantIds.has(request.senderId) &&
           participantIds.has(request.recipientId),
         id: room.id,
-        isReadOnly: Boolean(blocked),
+        isReadOnly: Boolean(blocked) || other.status !== UserStatus.ACTIVE,
         lastMessage: last
           ? {
               body: last.body,
@@ -1612,8 +1880,9 @@ export class PrismaCoreService implements CoreService {
           roleName: request.requestedRole.name,
         },
         user: {
-          handle: other.profile.handle,
-          nickname: other.profile.nickname,
+          handle: other.profile?.handle ?? "",
+          isDeleted,
+          nickname: other.profile?.nickname ?? "삭제된 사용자",
           userId: other.id,
         },
         unreadCount,
@@ -1622,29 +1891,58 @@ export class PrismaCoreService implements CoreService {
     return summaries
   }
 
-  async listChatMessages(userId: string, roomId: string) {
+  async listChatMessages(userId: string, roomId: string, after?: string) {
     await this.assertChatParticipant(userId, roomId)
-    const messages = await this.dependencies.database.chatMessage.findMany({
-      where: { deletedAt: null, roomId },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: 100,
+    const afterCursor = after ? decodeChatCursor(after) : null
+    const queried = await this.dependencies.database.chatMessage.findMany({
+      where: {
+        deletedAt: null,
+        roomId,
+        ...(afterCursor
+          ? {
+              OR: [
+                { createdAt: { gt: new Date(afterCursor.createdAt) } },
+                { createdAt: new Date(afterCursor.createdAt), id: { gt: afterCursor.id } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: afterCursor
+        ? [{ createdAt: "asc" }, { id: "asc" }]
+        : [{ createdAt: "desc" }, { id: "desc" }],
+      take: afterCursor ? 101 : 100,
     })
+    const hasMore = Boolean(afterCursor && queried.length > 100)
+    const messages = afterCursor ? queried.slice(0, 100) : queried.reverse()
     const lastMessage = messages.at(-1)
-    await this.dependencies.database.chatReadState.upsert({
-      where: { roomId_userId: { roomId, userId } },
-      update: { lastReadMessageId: lastMessage?.id ?? null, readAt: new Date() },
-      create: { lastReadMessageId: lastMessage?.id ?? null, readAt: new Date(), roomId, userId },
-    })
-    return messages.map((message) => ({
-      assetUrl: message.assetId
-        ? `${this.dependencies.apiOrigin}/v1/assets/${message.assetId}`
-        : null,
-      body: message.body,
-      createdAt: message.createdAt.toISOString(),
-      id: message.id,
-      isMine: message.senderId === userId,
-      type: messageType(message.type),
-    }))
+    if (lastMessage) {
+      await this.dependencies.database.chatReadState.upsert({
+        where: { roomId_userId: { roomId, userId } },
+        update: { lastReadMessageId: lastMessage.id, readAt: lastMessage.createdAt },
+        create: {
+          lastReadMessageId: lastMessage.id,
+          readAt: lastMessage.createdAt,
+          roomId,
+          userId,
+        },
+      })
+    }
+    return {
+      cursor: lastMessage
+        ? encodeChatCursor({ createdAt: lastMessage.createdAt.toISOString(), id: lastMessage.id })
+        : (after ?? null),
+      hasMore,
+      items: messages.map((message) => ({
+        assetUrl: message.assetId
+          ? `${this.dependencies.apiOrigin}/v1/assets/${message.assetId}`
+          : null,
+        body: message.body,
+        createdAt: message.createdAt.toISOString(),
+        id: message.id,
+        isMine: message.senderId === userId,
+        type: messageType(message.type),
+      })),
+    } satisfies ChatMessagePage
   }
 
   async sendChatMessage(
@@ -1656,6 +1954,12 @@ export class PrismaCoreService implements CoreService {
       throw new ApiError(400, "INVALID_MESSAGE", "메시지는 1~2,000자로 입력해주세요.")
     }
     const room = await this.assertChatParticipant(userId, roomId)
+    if (
+      room.scoutRequest.sender.status !== UserStatus.ACTIVE ||
+      room.scoutRequest.recipient.status !== UserStatus.ACTIVE
+    ) {
+      throw new ApiError(403, "CHAT_READ_ONLY", "삭제되거나 정지된 계정과는 대화할 수 없어요.")
+    }
     const blocked = await this.dependencies.database.userBlock.findFirst({
       where: {
         OR: [
@@ -1710,6 +2014,7 @@ export class PrismaCoreService implements CoreService {
     }
     await this.dependencies.notifyChat?.(roomId, message)
     await this.createMannerAvailabilityNotifications(room.scoutRequest.id)
+    this.track("chat_message_sent")
     return message
   }
 
@@ -1719,6 +2024,12 @@ export class PrismaCoreService implements CoreService {
     input: { byteSize: number; mimeType: "image/jpeg" | "image/png" | "image/webp" },
   ) {
     const room = await this.assertChatParticipant(userId, roomId)
+    if (
+      room.scoutRequest.sender.status !== UserStatus.ACTIVE ||
+      room.scoutRequest.recipient.status !== UserStatus.ACTIVE
+    ) {
+      throw new ApiError(403, "CHAT_READ_ONLY", "삭제되거나 정지된 계정과는 대화할 수 없어요.")
+    }
     const blocked = await this.dependencies.database.userBlock.findFirst({
       where: {
         OR: [
@@ -1761,6 +2072,12 @@ export class PrismaCoreService implements CoreService {
     input: { assetId: string; clientMessageId: string },
   ) {
     const room = await this.assertChatParticipant(userId, roomId)
+    if (
+      room.scoutRequest.sender.status !== UserStatus.ACTIVE ||
+      room.scoutRequest.recipient.status !== UserStatus.ACTIVE
+    ) {
+      throw new ApiError(403, "CHAT_READ_ONLY", "삭제되거나 정지된 계정과는 대화할 수 없어요.")
+    }
     const blocked = await this.dependencies.database.userBlock.findFirst({
       where: {
         OR: [
@@ -1826,6 +2143,7 @@ export class PrismaCoreService implements CoreService {
     }
     await this.dependencies.notifyChat?.(roomId, message)
     await this.createMannerAvailabilityNotifications(room.scoutRequest.id)
+    this.track("chat_message_sent")
     return message
   }
 
@@ -1918,11 +2236,17 @@ export class PrismaCoreService implements CoreService {
       await this.dependencies.database.$transaction(async (transaction) => {
         const request = await transaction.scoutRequest.findUnique({
           where: { id: scoutRequestId },
-          include: { chatRoom: { include: { messages: true } } },
+          include: {
+            chatRoom: { include: { messages: { where: { deletedAt: null } } } },
+            recipient: { select: { status: true } },
+            sender: { select: { status: true } },
+          },
         })
         if (
           !request ||
           request.status !== DatabaseScoutRequestStatus.ACCEPTED ||
+          request.sender.status !== UserStatus.ACTIVE ||
+          request.recipient.status !== UserStatus.ACTIVE ||
           (request.senderId !== userId && request.recipientId !== userId)
         ) {
           throw new ApiError(403, "MANNER_FORBIDDEN", "평가할 수 없는 관계예요.")
@@ -1974,6 +2298,7 @@ export class PrismaCoreService implements CoreService {
       }
       throw error
     }
+    this.track("manner_submitted")
   }
 
   async listNotifications(userId: string) {
@@ -2058,6 +2383,7 @@ export class PrismaCoreService implements CoreService {
         targetType: mapReportTarget(input.targetType),
       },
     })
+    this.track("report_submitted")
     return { id: report.id }
   }
 
@@ -2162,6 +2488,7 @@ export class PrismaCoreService implements CoreService {
         },
       }),
     ])
+    this.track("portfolio_processing_failed")
   }
 
   private async failProcessing(portfolioId: string, userId: string, code: string) {
@@ -2179,6 +2506,7 @@ export class PrismaCoreService implements CoreService {
         },
       }),
     ])
+    this.track("portfolio_processing_failed")
   }
 
   private async createMannerAvailabilityNotifications(scoutRequestId: string) {
@@ -2224,7 +2552,14 @@ export class PrismaCoreService implements CoreService {
           OR: [{ recipientId: userId }, { senderId: userId }],
         },
       },
-      include: { scoutRequest: true },
+      include: {
+        scoutRequest: {
+          include: {
+            recipient: { select: { status: true } },
+            sender: { select: { status: true } },
+          },
+        },
+      },
     })
     if (!room) throw new ApiError(403, "CHAT_FORBIDDEN", "채팅방에 접근할 수 없어요.")
     return room

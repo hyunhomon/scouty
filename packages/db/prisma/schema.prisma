@@ -124,6 +124,7 @@ model User {
   email        String?    @db.VarChar(320)
   isAdmin      Boolean    @default(false) @map("is_admin")
   status       UserStatus @default(ACTIVE)
+  deletedAt    DateTime?  @map("deleted_at") @db.Timestamptz(3)
   createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -237,6 +238,7 @@ model Asset {
   durationSeconds Int?        @map("duration_seconds")
   status          AssetStatus @default(UPLOADING)
   metadata        Json        @default("{}") @db.JsonB
+  purgedAt        DateTime?   @map("purged_at") @db.Timestamptz(3)
   createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
 
   owner             User            @relation("AssetOwner", fields: [ownerId], references: [id], onDelete: Restrict)
@@ -254,23 +256,23 @@ model Asset {
 }
 
 model Portfolio {
-  id                      String                      @id @default(uuid()) @db.Uuid
-  authorId                String                      @map("author_id") @db.Uuid
-  title                   String                      @db.VarChar(60)
-  pdfAssetId              String                      @map("pdf_asset_id") @db.Uuid
-  videoAssetId            String?                     @map("video_asset_id") @db.Uuid
-  replacementPdfAssetId   String?                     @unique @map("replacement_pdf_asset_id") @db.Uuid
-  replacementVideoAssetId String?                     @unique @map("replacement_video_asset_id") @db.Uuid
-  replacementStatus       PortfolioReplacementStatus? @map("replacement_status")
-  replacementErrorCode    String?                     @map("replacement_error_code") @db.VarChar(80)
-  videoProcessingErrorCode String?                    @map("video_processing_error_code") @db.VarChar(80)
-  pageCount               Int?                        @map("page_count")
-  coverPage               Int                         @default(1) @map("cover_page")
-  status                  PortfolioStatus             @default(DRAFT)
-  processingErrorCode     String?                     @map("processing_error_code") @db.VarChar(80)
-  publishedAt             DateTime?                   @map("published_at") @db.Timestamptz(3)
-  createdAt               DateTime                    @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt               DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                       String                      @id @default(uuid()) @db.Uuid
+  authorId                 String                      @map("author_id") @db.Uuid
+  title                    String                      @db.VarChar(60)
+  pdfAssetId               String                      @map("pdf_asset_id") @db.Uuid
+  videoAssetId             String?                     @map("video_asset_id") @db.Uuid
+  replacementPdfAssetId    String?                     @unique @map("replacement_pdf_asset_id") @db.Uuid
+  replacementVideoAssetId  String?                     @unique @map("replacement_video_asset_id") @db.Uuid
+  replacementStatus        PortfolioReplacementStatus? @map("replacement_status")
+  replacementErrorCode     String?                     @map("replacement_error_code") @db.VarChar(80)
+  videoProcessingErrorCode String?                     @map("video_processing_error_code") @db.VarChar(80)
+  pageCount                Int?                        @map("page_count")
+  coverPage                Int                         @default(1) @map("cover_page")
+  status                   PortfolioStatus             @default(DRAFT)
+  processingErrorCode      String?                     @map("processing_error_code") @db.VarChar(80)
+  publishedAt              DateTime?                   @map("published_at") @db.Timestamptz(3)
+  createdAt                DateTime                    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   author                User                @relation(fields: [authorId], references: [id], onDelete: Restrict)
   pdfAsset              Asset               @relation("PortfolioPdf", fields: [pdfAssetId], references: [id], onDelete: Restrict)
@@ -369,6 +371,8 @@ model ScoutRequest {
   respondedAt                  DateTime?          @map("responded_at") @db.Timestamptz(3)
   canceledAt                   DateTime?          @map("canceled_at") @db.Timestamptz(3)
   invalidatedAt                DateTime?          @map("invalidated_at") @db.Timestamptz(3)
+  senderReadAt                 DateTime?          @map("sender_read_at") @db.Timestamptz(3)
+  recipientReadAt              DateTime?          @map("recipient_read_at") @db.Timestamptz(3)
   createdAt                    DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt                    DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -381,6 +385,8 @@ model ScoutRequest {
 
   @@index([recipientId, status, createdAt(sort: Desc)])
   @@index([senderId, status, createdAt(sort: Desc)])
+  @@index([recipientId, recipientReadAt])
+  @@index([senderId, senderReadAt])
   @@map("scout_requests")
 }
 

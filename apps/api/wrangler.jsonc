@@ -33,6 +33,12 @@
       "bucket_name": "scouty-assets"
     }
   ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "ANALYTICS",
+      "dataset": "scouty_product_events"
+    }
+  ],
   "queues": {
     "producers": [
       {

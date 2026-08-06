@@ -60,6 +60,9 @@ describe("OpenAPI reference", () => {
     expect(specification.paths).toHaveProperty("/v1/auth/google/start")
     expect(specification.paths).toHaveProperty("/v1/scout/requests")
     expect(specification.paths).toHaveProperty("/v1/chat/rooms/{id}/messages")
+    expect(specification.paths).toHaveProperty("/v1/me/unread-counts")
+    expect(specification.paths).toHaveProperty("/v1/me/account")
+    expect(specification.paths).toHaveProperty("/v1/analytics/events")
   })
 })
 

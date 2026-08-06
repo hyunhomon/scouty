@@ -187,6 +187,24 @@ export function createCoreRoutes(options: CoreRouteOptions) {
       },
       { detail: { summary: "로그아웃", tags: ["Auth"] } },
     )
+    .post(
+      "/v1/analytics/events",
+      async ({ body, request }) => {
+        assertRequestOrigin(request, options)
+        await getCore(options).trackProductEvent(body.name)
+        return { ok: true }
+      },
+      {
+        body: t.Object({
+          name: t.Union([
+            t.Literal("feed_viewed"),
+            t.Literal("portfolio_viewed"),
+            t.Literal("profile_viewed"),
+          ]),
+        }),
+        detail: { summary: "익명 제품 이벤트", tags: ["Analytics"] },
+      },
+    )
     .get(
       "/v1/me",
       async ({ request }) => {
@@ -194,6 +212,24 @@ export function createCoreRoutes(options: CoreRouteOptions) {
         return getCore(options).getMe(user.id)
       },
       { detail: { summary: "내 프로필", tags: ["Profile"] } },
+    )
+    .get(
+      "/v1/me/unread-counts",
+      async ({ request }) => {
+        const user = await requireUser(request, options)
+        return getCore(options).getUnreadCounts(user.id)
+      },
+      { detail: { summary: "제안·채팅 읽지 않음", tags: ["Profile"] } },
+    )
+    .delete(
+      "/v1/me/account",
+      async ({ request, set }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).deleteAccount(user.id)
+        set.headers["set-cookie"] = clearSessionCookie(options.cookieDomain)
+        return { ok: true }
+      },
+      { detail: { summary: "계정 삭제", tags: ["Profile"] } },
     )
     .put(
       "/v1/me/profile",
@@ -489,11 +525,15 @@ export function createCoreRoutes(options: CoreRouteOptions) {
     )
     .get(
       "/v1/chat/rooms/:id/messages",
-      async ({ params, request }) => {
+      async ({ params, query, request }) => {
         const user = await requireUser(request, options)
-        return getCore(options).listChatMessages(user.id, params.id)
+        return getCore(options).listChatMessages(user.id, params.id, query.after)
       },
-      { params: idParams, detail: { summary: "채팅 메시지", tags: ["Chat"] } },
+      {
+        params: idParams,
+        query: t.Object({ after: t.Optional(t.String({ maxLength: 512 })) }),
+        detail: { summary: "채팅 메시지", tags: ["Chat"] },
+      },
     )
     .get(
       "/v1/chat/rooms/:id/socket",

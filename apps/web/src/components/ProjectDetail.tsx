@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { trackProductEvent } from "@/lib/analytics"
 import { api, apiUrl } from "@/lib/api"
 
 export type ProjectDetailClient = {
@@ -124,6 +125,7 @@ export function ProjectDetail({
         setRoles(nextRoles)
         setPortfolio(nextPortfolio)
         setStatus(nextPortfolio ? "ready" : "not-found")
+        if (nextPortfolio) trackProductEvent("portfolio_viewed")
       })
       .catch(() => {
         if (active) setStatus("error")
