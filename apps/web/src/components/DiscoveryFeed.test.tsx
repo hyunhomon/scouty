@@ -42,6 +42,10 @@ describe("DiscoveryFeed", () => {
     expect(screen.getByText("민지 · @minji")).toBeInTheDocument()
     expect(screen.getAllByText("UI·UX 디자인").length).toBeGreaterThan(0)
     expect(screen.getByText("#핀테크")).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: /대학생 금융 습관 서비스/ })).toHaveAttribute(
+      "href",
+      "/portfolios/portfolio-1",
+    )
   })
 
   it("reloads the feed when a role is selected", async () => {

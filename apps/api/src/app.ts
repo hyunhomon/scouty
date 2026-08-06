@@ -11,6 +11,7 @@ import type { ReadinessResult } from "./readiness"
 
 export type {
   DiscoveryPortfolio,
+  DiscoveryPortfolioDetail,
   DiscoveryPortfolioPage,
   DiscoveryRole,
   ListDiscoveryPortfoliosInput,
@@ -55,6 +56,41 @@ const discoveryPortfolioSchema = t.Object({
 const discoveryPageSchema = t.Object({
   items: t.Array(discoveryPortfolioSchema),
   nextCursor: t.Union([t.String(), t.Null()]),
+})
+
+const discoveryPortfolioDetailSchema = t.Object({
+  id: t.String(),
+  author: t.Object({
+    avatarUrl: t.Union([t.String(), t.Null()]),
+    bio: t.String(),
+    handle: t.String(),
+    id: t.String(),
+    nickname: t.String(),
+    scoutStatus: t.Union([t.Literal("open"), t.Literal("selective"), t.Literal("closed")]),
+  }),
+  coverUrl: t.Union([t.String(), t.Null()]),
+  hasVideo: t.Boolean(),
+  otherProjects: t.Array(
+    t.Object({
+      coverUrl: t.Union([t.String(), t.Null()]),
+      id: t.String(),
+      publishedAt: t.String(),
+      title: t.String(),
+    }),
+  ),
+  pages: t.Array(
+    t.Object({
+      height: t.Number(),
+      imageUrl: t.String(),
+      pageNumber: t.Number(),
+      width: t.Number(),
+    }),
+  ),
+  publishedAt: t.String(),
+  roles: t.Array(t.String()),
+  tags: t.Array(t.String()),
+  title: t.String(),
+  videoUrl: t.Union([t.String(), t.Null()]),
 })
 
 const errorSchema = t.Object({
@@ -149,6 +185,32 @@ export function createApp(options: CreateAppOptions = {}) {
         detail: {
           summary: "공개 프로젝트 피드",
           description: "역할과 제목·태그 검색 조건으로 게시 프로젝트를 최신순 탐색합니다.",
+          tags: ["Discovery"],
+        },
+      },
+    )
+    .get(
+      "/v1/discovery/portfolios/:portfolioId",
+      async ({ params, status }) => {
+        const portfolio = await discovery.getPortfolio(params.portfolioId)
+
+        if (!portfolio) {
+          return status(404, {
+            code: "PORTFOLIO_NOT_FOUND",
+            message: "프로젝트를 찾을 수 없습니다.",
+          })
+        }
+
+        return portfolio
+      },
+      {
+        params: t.Object({
+          portfolioId: t.String({ maxLength: 100, minLength: 1 }),
+        }),
+        response: { 200: discoveryPortfolioDetailSchema, 404: errorSchema },
+        detail: {
+          summary: "공개 프로젝트 상세",
+          description: "프로젝트 메타데이터, 연속 페이지 이미지와 작성자 요약을 반환합니다.",
           tags: ["Discovery"],
         },
       },
