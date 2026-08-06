@@ -11,7 +11,8 @@
     "deploy": "wrangler deploy",
     "cf:typegen": "wrangler types worker-configuration.d.ts",
     "typecheck": "tsc --project tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7",

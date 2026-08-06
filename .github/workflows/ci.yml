@@ -17,18 +17,18 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_DB: scouty
+          POSTGRES_DB: scouty_test
           POSTGRES_PASSWORD: scouty
           POSTGRES_USER: scouty
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U scouty -d scouty"
+          --health-cmd "pg_isready -U scouty -d scouty_test"
           --health-interval 2s
           --health-timeout 3s
           --health-retries 15
     env:
-      DATABASE_URL: postgresql://scouty:scouty@localhost:5432/scouty?schema=public
+      DATABASE_URL: postgresql://scouty:scouty@localhost:5432/scouty_test?schema=public
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -37,6 +37,7 @@ jobs:
       - run: bun ci
       - run: bun run db:generate
       - run: bun run db:deploy
+      - run: bun run test:integration
       - run: bun run lint
       - run: bun run typecheck
       - run: bun run test

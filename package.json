@@ -17,6 +17,7 @@
     "format": "biome check --write .",
     "typecheck": "bun run --sequential --workspaces --if-present typecheck",
     "test": "bun run --parallel --workspaces --if-present test",
+    "test:integration": "bun run --filter '@scouty/api' test:integration",
     "test:e2e": "playwright test",
     "db:generate": "bun run --filter '@scouty/db' generate",
     "db:migrate": "bun run --filter '@scouty/db' migrate",

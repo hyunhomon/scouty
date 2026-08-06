@@ -47,6 +47,7 @@ scouty/
 | `bun run format` | Biome 포맷 적용 |
 | `bun run typecheck` | Astro·TypeScript·Prisma 검사 |
 | `bun run test` | 전체 테스트 |
+| `bun run test:integration` | `scouty_test` PostgreSQL의 상태 전이·동시성·제약 검사 |
 | `bun run test:e2e` | production build 기반 Chromium E2E·접근성 검사 |
 | `bun run build` | web과 api production build |
 
@@ -117,6 +118,7 @@ scouty/
 
 - 테스트는 구현 세부사항보다 사용자가 관찰하는 결과를 검증한다.
 - 주요 E2E 화면은 axe-core로 WCAG 2.2 AA 자동 검사를 실행한다. 자동 검사만으로 접근성 완료를 선언하지 않는다.
+- PostgreSQL 통합 테스트는 DB 이름이 정확히 `scouty_test`일 때만 데이터를 초기화하며 production·개발 DB에서는 실행을 거부한다.
 - 시간, UUID, 외부 네트워크는 제어 가능한 dependency로 둔다.
 - 오류 경로와 재시도·중복 요청을 정상 경로와 같은 중요도로 테스트한다.
 - flaky test는 재시도 횟수로 숨기지 않고 원인을 제거한다.
