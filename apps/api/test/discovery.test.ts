@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import { createApp } from "../src/app"
 import {
+  type DiscoveryPortfolioDetail,
   type DiscoveryRepository,
   decodeDiscoveryCursor,
   encodeDiscoveryCursor,
@@ -21,8 +22,31 @@ const portfolio = {
   title: "대학생 금융 습관 서비스",
 }
 
-function createDiscoveryRepository(): DiscoveryRepository {
+const portfolioDetail: DiscoveryPortfolioDetail = {
+  ...portfolio,
+  author: {
+    ...portfolio.author,
+    avatarUrl: "https://assets.scouty.test/users/user-1/avatar.webp",
+    bio: "사용자의 문제를 관찰하고 화면으로 풀어요.",
+    scoutStatus: "selective",
+  },
+  otherProjects: [],
+  pages: [
+    {
+      height: 1600,
+      imageUrl: "https://assets.scouty.test/portfolio-1/pages/1.webp",
+      pageNumber: 1,
+      width: 1200,
+    },
+  ],
+  videoUrl: "https://assets.scouty.test/portfolio-1/video.mp4",
+}
+
+function createDiscoveryRepository(
+  detail: DiscoveryPortfolioDetail | null = portfolioDetail,
+): DiscoveryRepository {
   return {
+    getPortfolio: vi.fn(async () => detail),
     listRoles: vi.fn(async () => [
       {
         groupName: "디자인",
@@ -97,6 +121,31 @@ describe("Discovery API", () => {
     await expect(response.json()).resolves.toEqual({
       code: "INVALID_CURSOR",
       message: "유효하지 않은 페이지 커서입니다.",
+    })
+  })
+
+  it("returns a project with its ordered page images", async () => {
+    const discovery = createDiscoveryRepository()
+    const app = createApp({ aot: false, discovery })
+    const response = await app.handle(
+      new Request("https://scouty.test/v1/discovery/portfolios/portfolio-1"),
+    )
+
+    expect(response.status).toBe(200)
+    expect(discovery.getPortfolio).toHaveBeenCalledWith("portfolio-1")
+    await expect(response.json()).resolves.toEqual(portfolioDetail)
+  })
+
+  it("uses a stable not-found response for hidden or missing projects", async () => {
+    const app = createApp({ aot: false, discovery: createDiscoveryRepository(null) })
+    const response = await app.handle(
+      new Request("https://scouty.test/v1/discovery/portfolios/missing"),
+    )
+
+    expect(response.status).toBe(404)
+    await expect(response.json()).resolves.toEqual({
+      code: "PORTFOLIO_NOT_FOUND",
+      message: "프로젝트를 찾을 수 없습니다.",
     })
   })
 })

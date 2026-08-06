@@ -46,53 +46,58 @@ function ProjectCard({
   roleNames: Map<string, string>
 }) {
   return (
-    <Card className="overflow-hidden rounded-2xl shadow-none">
-      <article>
-        <div className="aspect-[4/3] overflow-hidden bg-muted">
-          {portfolio.coverUrl ? (
-            <img
-              src={portfolio.coverUrl}
-              alt={`${portfolio.title} 프로젝트 커버`}
-              className="size-full object-contain"
-              loading="lazy"
-            />
-          ) : (
-            <div className="flex size-full flex-col items-center justify-center gap-2 text-muted-foreground">
-              <FileImage aria-hidden="true" size={32} strokeWidth={1.7} />
-              <span className="text-sm">커버 준비 중</span>
+    <a
+      href={`/portfolios/${encodeURIComponent(portfolio.id)}`}
+      className="block rounded-2xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+    >
+      <Card className="h-full overflow-hidden rounded-2xl shadow-none transition hover:border-primary/30">
+        <article>
+          <div className="aspect-[4/3] overflow-hidden bg-muted">
+            {portfolio.coverUrl ? (
+              <img
+                src={portfolio.coverUrl}
+                alt={`${portfolio.title} 프로젝트 커버`}
+                className="size-full object-contain"
+                loading="lazy"
+              />
+            ) : (
+              <div className="flex size-full flex-col items-center justify-center gap-2 text-muted-foreground">
+                <FileImage aria-hidden="true" size={32} strokeWidth={1.7} />
+                <span className="text-sm">커버 준비 중</span>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-4 p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-bold tracking-tight">{portfolio.title}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {portfolio.author.nickname} · @{portfolio.author.handle}
+                </p>
+              </div>
+              {portfolio.hasVideo ? (
+                <Badge variant="secondary" className="shrink-0">
+                  <Video aria-hidden="true" /> 영상
+                </Badge>
+              ) : null}
             </div>
-          )}
-        </div>
 
-        <div className="space-y-4 p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h2 className="truncate text-lg font-bold tracking-tight">{portfolio.title}</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {portfolio.author.nickname} · @{portfolio.author.handle}
-              </p>
+            <div className="flex flex-wrap gap-2">
+              {portfolio.roles.slice(0, 2).map((role) => (
+                <Badge key={role}>{roleNames.get(role) ?? role}</Badge>
+              ))}
             </div>
-            {portfolio.hasVideo ? (
-              <Badge variant="secondary" className="shrink-0">
-                <Video aria-hidden="true" /> 영상
-              </Badge>
-            ) : null}
-          </div>
 
-          <div className="flex flex-wrap gap-2">
-            {portfolio.roles.slice(0, 2).map((role) => (
-              <Badge key={role}>{roleNames.get(role) ?? role}</Badge>
-            ))}
+            <div className="flex flex-wrap gap-x-2 gap-y-1 text-sm text-muted-foreground">
+              {portfolio.tags.slice(0, 3).map((tag) => (
+                <span key={tag}>#{tag}</span>
+              ))}
+            </div>
           </div>
-
-          <div className="flex flex-wrap gap-x-2 gap-y-1 text-sm text-muted-foreground">
-            {portfolio.tags.slice(0, 3).map((tag) => (
-              <span key={tag}>#{tag}</span>
-            ))}
-          </div>
-        </div>
-      </article>
-    </Card>
+        </article>
+      </Card>
+    </a>
   )
 }
 

@@ -37,12 +37,32 @@ export type DiscoveryPortfolioPage = {
   nextCursor: string | null
 }
 
+export type DiscoveryPortfolioDetail = Omit<DiscoveryPortfolio, "author"> & {
+  author: DiscoveryPortfolio["author"] & {
+    avatarUrl: string | null
+    bio: string
+    scoutStatus: "closed" | "open" | "selective"
+  }
+  otherProjects: Array<Pick<DiscoveryPortfolio, "coverUrl" | "id" | "publishedAt" | "title">>
+  pages: Array<{
+    height: number
+    imageUrl: string
+    pageNumber: number
+    width: number
+  }>
+  videoUrl: string | null
+}
+
 export interface DiscoveryRepository {
+  getPortfolio(portfolioId: string): Promise<DiscoveryPortfolioDetail | null>
   listPortfolios(input: ListDiscoveryPortfoliosInput): Promise<DiscoveryPortfolioPage>
   listRoles(): Promise<DiscoveryRole[]>
 }
 
 const emptyDiscoveryRepository: DiscoveryRepository = {
+  async getPortfolio() {
+    return null
+  },
   async listPortfolios() {
     return { items: [], nextCursor: null }
   },
@@ -71,6 +91,20 @@ type DiscoveryPortfolioRow = {
   title: string
 }
 
+type DiscoveryPortfolioDetailRow = DiscoveryPortfolioRow & {
+  author_avatar_url: string | null
+  author_bio: string
+  author_scout_status: "closed" | "open" | "selective"
+  video_url: string | null
+}
+
+type DiscoveryPortfolioPageRow = {
+  height: number
+  image_url: string
+  page_number: number
+  width: number
+}
+
 function parseStringArray(value: string) {
   try {
     const parsed = JSON.parse(value)
@@ -79,6 +113,23 @@ function parseStringArray(value: string) {
       : []
   } catch {
     return []
+  }
+}
+
+function mapPortfolio(portfolio: DiscoveryPortfolioRow): DiscoveryPortfolio {
+  return {
+    id: portfolio.portfolio_id,
+    author: {
+      handle: portfolio.author_handle,
+      id: portfolio.author_id,
+      nickname: portfolio.author_nickname,
+    },
+    coverUrl: portfolio.cover_url,
+    hasVideo: portfolio.has_video === 1,
+    publishedAt: portfolio.published_at,
+    roles: parseStringArray(portfolio.role_slugs_json),
+    tags: parseStringArray(portfolio.tags_json),
+    title: portfolio.title,
   }
 }
 
@@ -110,6 +161,93 @@ export function decodeDiscoveryCursor(value: string): DiscoveryCursor | null {
 
 export class D1DiscoveryRepository implements DiscoveryRepository {
   constructor(private readonly database: D1Database) {}
+
+  async getPortfolio(portfolioId: string) {
+    const portfolio = await this.database
+      .prepare(
+        `SELECT
+           p.portfolio_id,
+           p.author_id,
+           p.author_handle,
+           p.author_nickname,
+           p.author_avatar_url,
+           p.author_bio,
+           p.author_scout_status,
+           p.title,
+           p.cover_url,
+           p.has_video,
+           p.video_url,
+           p.role_slugs_json,
+           p.tags_json,
+           p.published_at
+         FROM discovery_portfolios AS p
+         WHERE p.portfolio_id = ?`,
+      )
+      .bind(portfolioId)
+      .first<DiscoveryPortfolioDetailRow>()
+
+    if (!portfolio) return null
+
+    const [pages, otherProjects] = await Promise.all([
+      this.database
+        .prepare(
+          `SELECT page_number, image_url, width, height
+           FROM discovery_portfolio_pages
+           WHERE portfolio_id = ?
+           ORDER BY page_number ASC`,
+        )
+        .bind(portfolioId)
+        .all<DiscoveryPortfolioPageRow>(),
+      this.database
+        .prepare(
+          `SELECT
+             p.portfolio_id,
+             p.author_id,
+             p.author_handle,
+             p.author_nickname,
+             p.title,
+             p.cover_url,
+             p.has_video,
+             p.role_slugs_json,
+             p.tags_json,
+             p.published_at
+           FROM discovery_portfolios AS p
+           WHERE p.author_id = ? AND p.portfolio_id != ?
+           ORDER BY p.published_at DESC, p.portfolio_id DESC
+           LIMIT 3`,
+        )
+        .bind(portfolio.author_id, portfolioId)
+        .all<DiscoveryPortfolioRow>(),
+    ])
+
+    const summary = mapPortfolio(portfolio)
+
+    return {
+      ...summary,
+      author: {
+        ...summary.author,
+        avatarUrl: portfolio.author_avatar_url,
+        bio: portfolio.author_bio,
+        scoutStatus: portfolio.author_scout_status,
+      },
+      otherProjects: otherProjects.results.map((item) => {
+        const other = mapPortfolio(item)
+        return {
+          coverUrl: other.coverUrl,
+          id: other.id,
+          publishedAt: other.publishedAt,
+          title: other.title,
+        }
+      }),
+      pages: pages.results.map((page) => ({
+        height: page.height,
+        imageUrl: page.image_url,
+        pageNumber: page.page_number,
+        width: page.width,
+      })),
+      videoUrl: portfolio.video_url,
+    }
+  }
 
   async listRoles() {
     const result = await this.database
@@ -185,20 +323,7 @@ export class D1DiscoveryRepository implements DiscoveryRepository {
 
     const hasNextPage = result.results.length > input.limit
     const rows = result.results.slice(0, input.limit)
-    const items = rows.map((portfolio) => ({
-      id: portfolio.portfolio_id,
-      author: {
-        handle: portfolio.author_handle,
-        id: portfolio.author_id,
-        nickname: portfolio.author_nickname,
-      },
-      coverUrl: portfolio.cover_url,
-      hasVideo: portfolio.has_video === 1,
-      publishedAt: portfolio.published_at,
-      roles: parseStringArray(portfolio.role_slugs_json),
-      tags: parseStringArray(portfolio.tags_json),
-      title: portfolio.title,
-    }))
+    const items = rows.map(mapPortfolio)
     const lastItem = items.at(-1)
 
     return {
