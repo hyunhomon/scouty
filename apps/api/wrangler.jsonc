@@ -15,7 +15,7 @@
     "COOKIE_DOMAIN": ".greeney.life",
     "CORS_ORIGINS": "https://greeney.life,http://localhost:4321",
     "R2_ACCOUNT_ID": "d09b11497e0618d6dceff0559855a7b2",
-    "R2_BUCKET_NAME": "scouty-assets",
+    "R2_BUCKET_NAME": "scouty",
     "WEB_ORIGIN": "https://greeney.life"
   },
   "routes": [{ "pattern": "api.greeney.life", "custom_domain": true }],
@@ -30,7 +30,7 @@
   "r2_buckets": [
     {
       "binding": "ASSETS",
-      "bucket_name": "scouty-assets"
+      "bucket_name": "scouty"
     }
   ],
   "analytics_engine_datasets": [
