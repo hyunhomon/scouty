@@ -5,7 +5,7 @@
 | 상태 | 현재 개발 계약 |
 | 패키지 관리 | Bun workspace |
 | 포맷·린트 | Biome |
-| 테스트 | Vitest, Workers Vitest pool |
+| 테스트 | Vitest, Workers Vitest pool, Playwright, axe-core |
 
 이 문서의 명령과 디렉터리는 현재 저장소에서 동작하는 개발 계약이다. 구조나 명령을 바꾸면 이 문서와 CI를 함께 갱신한다.
 
@@ -47,6 +47,7 @@ scouty/
 | `bun run format` | Biome 포맷 적용 |
 | `bun run typecheck` | Astro·TypeScript·Prisma 검사 |
 | `bun run test` | 전체 테스트 |
+| `bun run test:e2e` | production build 기반 Chromium E2E·접근성 검사 |
 | `bun run build` | web과 api production build |
 
 `dev`, `test`, `build`는 루트에서 workspace filter를 사용한다. 앱 디렉터리 이동을 요구하는 명령은 예외적인 운영 명령으로 제한한다.
@@ -112,9 +113,10 @@ scouty/
 | API 통합 | route schema, 권한, 상태 전이, 오류 코드 |
 | DB 통합 | migration, transaction, unique/check constraint |
 | Worker runtime | workerd 호환성, D1·R2 binding |
-| E2E | PRD의 핵심 사용자 흐름 |
+| E2E | production build에서 PRD 핵심 흐름, 반응형, 키보드, 보안 헤더 |
 
 - 테스트는 구현 세부사항보다 사용자가 관찰하는 결과를 검증한다.
+- 주요 E2E 화면은 axe-core로 WCAG 2.2 AA 자동 검사를 실행한다. 자동 검사만으로 접근성 완료를 선언하지 않는다.
 - 시간, UUID, 외부 네트워크는 제어 가능한 dependency로 둔다.
 - 오류 경로와 재시도·중복 요청을 정상 경로와 같은 중요도로 테스트한다.
 - flaky test는 재시도 횟수로 숨기지 않고 원인을 제거한다.

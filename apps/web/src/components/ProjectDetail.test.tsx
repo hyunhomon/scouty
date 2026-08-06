@@ -79,7 +79,7 @@ describe("ProjectDetail", () => {
     expect(container.querySelector("video")).toHaveAttribute("preload", "metadata")
     expect(screen.getByRole("link", { name: /캠퍼스 지도 개선/ })).toHaveAttribute(
       "href",
-      "/portfolios/portfolio-2",
+      "/portfolio?portfolio=portfolio-2",
     )
   })
 

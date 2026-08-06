@@ -157,7 +157,10 @@ export function ProjectDetail({
 
   if (status === "error") {
     return (
-      <div className="mx-auto max-w-xl rounded-2xl border bg-card px-5 py-12 text-center">
+      <div
+        className="mx-auto max-w-xl rounded-2xl border bg-card px-5 py-12 text-center"
+        role="alert"
+      >
         <h1 className="text-xl font-bold">프로젝트를 불러오지 못했어요</h1>
         <p className="mt-2 text-sm text-muted-foreground">연결을 확인한 뒤 다시 시도해주세요.</p>
         <Button type="button" variant="outline" className="mt-5" onClick={retry}>
@@ -169,7 +172,10 @@ export function ProjectDetail({
 
   if (status === "not-found" || !portfolio) {
     return (
-      <div className="mx-auto max-w-xl rounded-2xl border bg-card px-5 py-12 text-center">
+      <div
+        className="mx-auto max-w-xl rounded-2xl border bg-card px-5 py-12 text-center"
+        role="status"
+      >
         <h1 className="text-xl font-bold">프로젝트를 찾을 수 없어요</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           보관되었거나 공개되지 않은 프로젝트일 수 있어요.
@@ -196,7 +202,7 @@ export function ProjectDetail({
         <div className="flex items-center gap-3">
           <Avatar avatarUrl={portfolio.author.avatarUrl} nickname={portfolio.author.nickname} />
           <a
-            href={`/profiles/${encodeURIComponent(portfolio.author.handle)}`}
+            href={`/profile-public?handle=${encodeURIComponent(portfolio.author.handle)}`}
             className="min-w-0 rounded outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
           >
             <p className="truncate font-bold">{portfolio.author.nickname}</p>
@@ -316,7 +322,7 @@ export function ProjectDetail({
             {portfolio.otherProjects.map((project) => (
               <a
                 key={project.id}
-                href={`/portfolios/${encodeURIComponent(project.id)}`}
+                href={`/portfolio?portfolio=${encodeURIComponent(project.id)}`}
                 className="overflow-hidden rounded-2xl border bg-card outline-none transition hover:border-primary/30 focus-visible:ring-[3px] focus-visible:ring-ring/50"
               >
                 <div className="aspect-[4/3] bg-muted">
@@ -339,19 +345,20 @@ export function ProjectDetail({
   )
 }
 
-function getPortfolioId(pathname: string) {
+function getPortfolioId(pathname: string, search: string) {
   const match = pathname.match(/^\/portfolios\/([^/]+)\/?$/)
-  if (!match?.[1]) return null
+  const encodedId = match?.[1] ?? new URLSearchParams(search).get("portfolio")
+  if (!encodedId) return null
 
   try {
-    return decodeURIComponent(match[1])
+    return decodeURIComponent(encodedId)
   } catch {
     return null
   }
 }
 
 export function ProjectDetailRoute({ client = defaultClient }: { client?: ProjectDetailClient }) {
-  const portfolioId = getPortfolioId(window.location.pathname)
+  const portfolioId = getPortfolioId(window.location.pathname, window.location.search)
 
   if (!portfolioId) {
     return (

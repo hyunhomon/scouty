@@ -37,5 +37,7 @@ jobs:
       - run: bun run typecheck
       - run: bun run test
       - run: bun run build
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test:e2e
       - name: Build PDF processing container
         run: docker build --file apps/api/container/Dockerfile apps/api/container

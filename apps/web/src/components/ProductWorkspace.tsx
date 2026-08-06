@@ -69,7 +69,7 @@ function LoadingPanel({ label = "불러오는 중" }: { label?: string }) {
 
 function ErrorPanel({ message, retry }: { message: string; retry?: () => void }) {
   return (
-    <Card className="rounded-2xl p-8 text-center shadow-none">
+    <Card className="rounded-2xl p-8 text-center shadow-none" aria-live="polite">
       <p className="font-bold">{message}</p>
       {retry ? (
         <Button type="button" variant="outline" className="mt-4" onClick={retry}>
@@ -144,7 +144,7 @@ function WorkspaceNav({
               href={item.href}
               aria-current={view === item.view ? "page" : undefined}
               className={cn(
-                "flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-semibold transition",
+                "flex h-11 items-center gap-2 rounded-xl px-3 text-sm font-semibold transition",
                 view === item.view ? "bg-primary text-primary-foreground" : "hover:bg-muted",
               )}
             >
@@ -163,7 +163,7 @@ function WorkspaceNav({
         })}
         <button
           type="button"
-          className="h-10 rounded-xl px-3 text-sm font-semibold text-muted-foreground hover:bg-muted"
+          className="h-11 rounded-xl px-3 text-sm font-semibold text-muted-foreground hover:bg-muted"
           onClick={async () => {
             await request("/v1/auth/logout", { method: "POST" })
             window.location.assign("/feed")
@@ -367,7 +367,11 @@ function OnboardingView({
             <option value="closed">지금은 받지 않아요</option>
           </select>
         </Field>
-        {message ? <p className="text-sm text-destructive">{message}</p> : null}
+        {message ? (
+          <p className="text-sm text-destructive" role="status" aria-live="polite">
+            {message}
+          </p>
+        ) : null}
         <Button type="submit" size="lg" disabled={isSaving || selectedRoles.length === 0}>
           {isSaving ? "저장하는 중" : "프로필 저장"}
         </Button>
@@ -479,7 +483,11 @@ function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreated: () 
         <Field label="태그 1~5개 (쉼표로 구분)">
           <input className={inputClass} name="tags" placeholder="핀테크, 모바일" required />
         </Field>
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+        {error ? (
+          <p className="text-sm text-destructive" role="status" aria-live="polite">
+            {error}
+          </p>
+        ) : null}
         <Button type="submit" disabled={isSubmitting || selectedRoles.length === 0}>
           <FileUp aria-hidden="true" /> {isSubmitting ? "올리고 있어요" : "프로젝트 등록"}
         </Button>
@@ -661,7 +669,10 @@ function PortfolioCard({
       </p>
       <div className="mt-4 flex flex-wrap gap-3 text-sm">
         {portfolio.status === "published" ? (
-          <a href={`/portfolios/${portfolio.id}`} className="font-semibold text-primary">
+          <a
+            href={`/portfolio?portfolio=${encodeURIComponent(portfolio.id)}`}
+            className="font-semibold text-primary"
+          >
             상세 보기
           </a>
         ) : null}
@@ -817,7 +828,11 @@ function PortfolioCard({
           </div>
         </form>
       ) : null}
-      {message ? <p className="mt-3 text-xs text-destructive">{message}</p> : null}
+      {message ? (
+        <p className="mt-3 text-xs text-destructive" role="status" aria-live="polite">
+          {message}
+        </p>
+      ) : null}
     </Card>
   )
 }
@@ -886,7 +901,7 @@ function ProfileView({ profile, roles }: { profile: ProfileSummary; roles: Role[
           {bookmarks.map((portfolio) => (
             <a
               key={portfolio.id}
-              href={`/portfolios/${portfolio.id}`}
+              href={`/portfolio?portfolio=${encodeURIComponent(portfolio.id)}`}
               className="rounded-2xl border bg-card p-5 font-bold"
             >
               {portfolio.title}
@@ -1148,7 +1163,7 @@ function ScoutView({ roles }: { roles: Role[] }) {
                 {bookmarks.has(candidate.id) ? "저장됨" : "저장"}
               </Button>
               <Button asChild variant="outline">
-                <a href={`/portfolios/${candidate.id}`}>상세</a>
+                <a href={`/portfolio?portfolio=${encodeURIComponent(candidate.id)}`}>상세</a>
               </Button>
               <Button onClick={() => setShowProposal(true)}>제안</Button>
             </div>
@@ -1194,7 +1209,15 @@ function ScoutView({ roles }: { roles: Role[] }) {
           </form>
         </Card>
       ) : null}
-      {message ? <p className="mt-4 text-center text-sm text-muted-foreground">{message}</p> : null}
+      {message ? (
+        <p
+          className="mt-4 text-center text-sm text-muted-foreground"
+          role="status"
+          aria-live="polite"
+        >
+          {message}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -1220,7 +1243,8 @@ function RequestsView({ onRead }: { onRead: () => Promise<void> }) {
       `/v1/scout/requests/${id}/${action}`,
       { method: "POST" },
     )
-    if (result.chatRoomId) window.location.assign(`/chat/${result.chatRoomId}`)
+    if (result.chatRoomId)
+      window.location.assign(`/chat?room=${encodeURIComponent(result.chatRoomId)}`)
     else await load()
   }
   return (
@@ -1310,7 +1334,10 @@ function MessageBody({ body }: { body: string }) {
 function ChatView({ onUnreadChange }: { onUnreadChange: (count: number) => void }) {
   const [rooms, setRooms] = useState<ChatRoomSummary[]>([])
   const [roomId, setRoomId] = useState(
-    () => window.location.pathname.match(/^\/chat\/([^/]+)/)?.[1],
+    () =>
+      window.location.pathname.match(/^\/chat\/([^/]+)/)?.[1] ??
+      new URLSearchParams(window.location.search).get("room") ??
+      undefined,
   )
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [message, setMessage] = useState<string>()
@@ -1529,6 +1556,14 @@ function ChatView({ onUnreadChange }: { onUnreadChange: (count: number) => void 
                         : "bg-muted",
                   )}
                 >
+                  <span className="sr-only">
+                    {message.type === "system"
+                      ? "시스템 안내"
+                      : message.isMine
+                        ? "내 메시지"
+                        : `${activeRoom.user.nickname} 메시지`}
+                    .
+                  </span>
                   {message.assetUrl ? (
                     <img
                       src={message.assetUrl}
@@ -1538,12 +1573,20 @@ function ChatView({ onUnreadChange }: { onUnreadChange: (count: number) => void 
                   ) : message.body ? (
                     <MessageBody body={message.body} />
                   ) : null}
+                  <time className="mt-1 block text-[11px]" dateTime={message.createdAt}>
+                    {new Date(message.createdAt).toLocaleTimeString("ko-KR", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </time>
                 </div>
               ))}
             </div>
             {activeRoom.isReadOnly ? (
               <p className="border-t p-4 text-center text-sm text-muted-foreground">
-                차단된 관계라 이전 대화만 볼 수 있어요.
+                {activeRoom.user.isDeleted
+                  ? "삭제된 계정과의 이전 대화만 볼 수 있어요."
+                  : "차단된 관계라 이전 대화만 볼 수 있어요."}
               </p>
             ) : (
               <form className="grid gap-2 border-t p-3" onSubmit={send}>
@@ -1576,16 +1619,22 @@ function ChatView({ onUnreadChange }: { onUnreadChange: (count: number) => void 
             {activeRoom.canReview ? (
               <div className="flex items-center justify-center gap-2 border-t p-3 text-xs text-muted-foreground">
                 <span>이번 소통은 어땠나요?</span>
-                <button type="button" onClick={() => manner("positive")}>
+                <button className="min-h-11 px-2" type="button" onClick={() => manner("positive")}>
                   좋았어요
                 </button>
-                <button type="button" onClick={() => manner("negative")}>
+                <button className="min-h-11 px-2" type="button" onClick={() => manner("negative")}>
                   아쉬웠어요
                 </button>
               </div>
             ) : null}
             {message ? (
-              <p className="border-t p-3 text-center text-xs text-muted-foreground">{message}</p>
+              <p
+                className="border-t p-3 text-center text-xs text-muted-foreground"
+                role="status"
+                aria-live="polite"
+              >
+                {message}
+              </p>
             ) : null}
           </>
         ) : (
@@ -1694,7 +1743,11 @@ function TrustActions({ userId, onBlocked }: { userId: string; onBlocked?: () =>
       <Button type="button" variant="outline" onClick={reportUser}>
         신고
       </Button>
-      {message ? <span className="text-xs text-muted-foreground">{message}</span> : null}
+      {message ? (
+        <span className="text-xs text-muted-foreground" role="status" aria-live="polite">
+          {message}
+        </span>
+      ) : null}
     </div>
   )
 }
@@ -1716,16 +1769,18 @@ export function ProductWorkspace({ view }: { view: WorkspaceView }) {
     setError(undefined)
     try {
       const currentSession = await request<SessionUser | null>("/v1/auth/session")
-      const availableRoles = await request<Role[]>("/v1/discovery/roles")
-      setRoles(availableRoles)
-      if (currentSession) {
-        const [nextProfile, nextUnread] = await Promise.all([
-          request<ProfileSummary | null>("/v1/me"),
-          request<UnreadCounts>("/v1/me/unread-counts"),
-        ])
-        setProfile(nextProfile)
-        setUnreadCounts(nextUnread)
+      if (!currentSession) {
+        setSession(null)
+        return
       }
+      const [availableRoles, nextProfile, nextUnread] = await Promise.all([
+        request<Role[]>("/v1/discovery/roles"),
+        request<ProfileSummary | null>("/v1/me"),
+        request<UnreadCounts>("/v1/me/unread-counts"),
+      ])
+      setRoles(availableRoles)
+      setProfile(nextProfile)
+      setUnreadCounts(nextUnread)
       setSession(currentSession)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "화면을 불러오지 못했어요.")
@@ -1768,7 +1823,10 @@ export function ProductWorkspace({ view }: { view: WorkspaceView }) {
 }
 
 export function PublicProfileRoute() {
-  const handle = window.location.pathname.match(/^\/profiles\/([^/]+)\/?$/)?.[1]
+  const handle =
+    window.location.pathname.match(/^\/profiles\/([^/]+)\/?$/)?.[1] ??
+    new URLSearchParams(window.location.search).get("handle") ??
+    undefined
   const [profile, setProfile] = useState<PublicProfile | null | undefined>()
   const [error, setError] = useState<string>()
 
@@ -1824,7 +1882,7 @@ export function PublicProfileRoute() {
         {profile.portfolios.map((portfolio) => (
           <a
             key={portfolio.id}
-            href={`/portfolios/${portfolio.id}`}
+            href={`/portfolio?portfolio=${encodeURIComponent(portfolio.id)}`}
             className="rounded-2xl border bg-card p-5 outline-none transition hover:border-primary/30 focus-visible:ring-[3px] focus-visible:ring-ring/50"
           >
             <strong>{portfolio.title}</strong>

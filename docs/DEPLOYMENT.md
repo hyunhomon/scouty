@@ -31,6 +31,7 @@ bun run lint
 bun run typecheck
 bun run test
 bun run build
+bun run test:e2e
 bun run db:deploy
 bunx wrangler d1 migrations apply scouty-edge --remote --config apps/api/wrangler.jsonc
 bun run deploy:api

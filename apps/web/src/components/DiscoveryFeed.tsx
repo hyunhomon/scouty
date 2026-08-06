@@ -54,7 +54,7 @@ function ProjectCard({
     <Card className="h-full overflow-hidden rounded-2xl shadow-none transition hover:border-primary/30">
       <article>
         <a
-          href={`/portfolios/${encodeURIComponent(portfolio.id)}`}
+          href={`/portfolio?portfolio=${encodeURIComponent(portfolio.id)}`}
           className="block outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         >
           <div className="aspect-[4/3] overflow-hidden bg-muted">
@@ -104,7 +104,7 @@ function ProjectCard({
         <div className="border-t px-5 py-3">
           <button
             type="button"
-            className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"
+            className="inline-flex min-h-11 items-center gap-1.5 px-1 text-sm font-semibold text-muted-foreground"
             aria-pressed={isBookmarked}
             onClick={onBookmark}
           >
@@ -314,7 +314,7 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
             aria-pressed={!selectedRole}
             onClick={() => setSelectedRole(undefined)}
             className={cn(
-              "h-10 shrink-0 rounded-full border px-4 text-sm font-semibold transition",
+              "h-11 shrink-0 rounded-full border px-4 text-sm font-semibold transition",
               !selectedRole
                 ? "border-primary bg-primary text-primary-foreground"
                 : "bg-card hover:bg-muted",
@@ -329,7 +329,7 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
               aria-pressed={selectedRole === role.slug}
               onClick={() => setSelectedRole(role.slug)}
               className={cn(
-                "h-10 shrink-0 rounded-full border px-4 text-sm font-semibold transition",
+                "h-11 shrink-0 rounded-full border px-4 text-sm font-semibold transition",
                 selectedRole === role.slug
                   ? "border-primary bg-primary text-primary-foreground"
                   : "bg-card hover:bg-muted",
@@ -340,7 +340,9 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
           ))}
         </div>
         {roleError ? (
-          <p className="mt-2 text-sm text-muted-foreground">역할 필터를 불러오지 못했어요.</p>
+          <p className="mt-2 text-sm text-muted-foreground" role="status" aria-live="polite">
+            역할 필터를 불러오지 못했어요.
+          </p>
         ) : null}
       </fieldset>
 
@@ -389,7 +391,11 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
             </div>
           ) : null}
           {loadMoreError ? (
-            <p className="mt-3 text-center text-sm text-muted-foreground">
+            <p
+              className="mt-3 text-center text-sm text-muted-foreground"
+              role="status"
+              aria-live="polite"
+            >
               다음 프로젝트를 불러오지 못했어요.
             </p>
           ) : null}
