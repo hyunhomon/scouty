@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+.astro/
+.wrangler/
+coverage/
+
+# generated code
+packages/db/src/generated/
+apps/api/worker-configuration.d.ts
+
+# local configuration and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# local database and storage
+*.db
+*.db-shm
+*.db-wal
+
+# logs and operating systems
+*.log
+.DS_Store
+Thumbs.db

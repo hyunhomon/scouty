@@ -1,0 +1,37 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "scouty-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "CORS_ORIGINS": "http://localhost:4321"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgresql://scouty:scouty@localhost:5432/scouty"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "EDGE_DB",
+      "database_name": "scouty-edge",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "d1/migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ASSETS",
+      "bucket_name": "scouty-assets"
+    }
+  ],
+  "dev": {
+    "port": 8787
+  }
+}

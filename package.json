@@ -1,0 +1,38 @@
+{
+  "name": "scouty",
+  "private": true,
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "infra:up": "docker compose up -d postgres",
+    "infra:down": "docker compose down",
+    "dev": "bun run --parallel --filter './apps/*' dev",
+    "dev:web": "bun run --filter '@scouty/web' dev",
+    "dev:api": "bun run --filter '@scouty/api' dev",
+    "build": "bun run --sequential --workspaces --if-present build",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "bun run --sequential --workspaces --if-present typecheck",
+    "test": "bun run --parallel --workspaces --if-present test",
+    "db:generate": "bun run --filter '@scouty/db' generate",
+    "db:migrate": "bun run --filter '@scouty/db' migrate",
+    "db:deploy": "bun run --filter '@scouty/db' deploy",
+    "db:seed": "bun run --filter '@scouty/db' seed",
+    "db:studio": "bun run --filter '@scouty/db' studio",
+    "cf:typegen": "bun run --filter '@scouty/api' cf:typegen",
+    "deploy:web": "bun run --filter '@scouty/web' deploy",
+    "deploy:api": "bun run --filter '@scouty/api' deploy"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.7",
+    "@cloudflare/vitest-pool-workers": "^0.20.2",
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "@types/bun": "^1.3.14",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.119.0"
+  }
+}

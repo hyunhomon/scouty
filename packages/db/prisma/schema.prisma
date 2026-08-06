@@ -1,0 +1,477 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  runtime  = "cloudflare"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE    @map("active")
+  SUSPENDED @map("suspended")
+  DELETED   @map("deleted")
+
+  @@map("user_status")
+}
+
+enum ScoutStatus {
+  OPEN      @map("open")
+  SELECTIVE @map("selective")
+  CLOSED    @map("closed")
+
+  @@map("scout_status")
+}
+
+enum AssetKind {
+  AVATAR              @map("avatar")
+  PORTFOLIO_PDF       @map("portfolio_pdf")
+  PORTFOLIO_PAGE      @map("portfolio_page")
+  PORTFOLIO_THUMBNAIL @map("portfolio_thumbnail")
+  PORTFOLIO_VIDEO     @map("portfolio_video")
+  CHAT_IMAGE          @map("chat_image")
+
+  @@map("asset_kind")
+}
+
+enum AssetStatus {
+  UPLOADING @map("uploading")
+  READY     @map("ready")
+  FAILED    @map("failed")
+  DELETED   @map("deleted")
+
+  @@map("asset_status")
+}
+
+enum PortfolioStatus {
+  DRAFT      @map("draft")
+  PROCESSING @map("processing")
+  PUBLISHED  @map("published")
+  FAILED     @map("failed")
+  ARCHIVED   @map("archived")
+
+  @@map("portfolio_status")
+}
+
+enum ScoutRequestStatus {
+  PENDING  @map("pending")
+  ACCEPTED @map("accepted")
+  DECLINED @map("declined")
+  CANCELED @map("canceled")
+
+  @@map("scout_request_status")
+}
+
+enum ChatMessageType {
+  TEXT   @map("text")
+  IMAGE  @map("image")
+  SYSTEM @map("system")
+
+  @@map("chat_message_type")
+}
+
+enum MannerSentiment {
+  POSITIVE @map("positive")
+  NEGATIVE @map("negative")
+
+  @@map("manner_sentiment")
+}
+
+enum ReportTargetType {
+  USER          @map("user")
+  PORTFOLIO     @map("portfolio")
+  SCOUT_REQUEST @map("scout_request")
+  MESSAGE       @map("message")
+
+  @@map("report_target_type")
+}
+
+enum ReportStatus {
+  OPEN      @map("open")
+  REVIEWING @map("reviewing")
+  RESOLVED  @map("resolved")
+  DISMISSED @map("dismissed")
+
+  @@map("report_status")
+}
+
+enum NotificationType {
+  SCOUT_REQUEST_RECEIVED         @map("scout_request_received")
+  SCOUT_REQUEST_ACCEPTED         @map("scout_request_accepted")
+  SCOUT_REQUEST_DECLINED         @map("scout_request_declined")
+  CHAT_MESSAGE_RECEIVED          @map("chat_message_received")
+  MANNER_FEEDBACK_AVAILABLE      @map("manner_feedback_available")
+  PORTFOLIO_PROCESSING_COMPLETED @map("portfolio_processing_completed")
+  PORTFOLIO_PROCESSING_FAILED    @map("portfolio_processing_failed")
+
+  @@map("notification_type")
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  authProvider String     @map("auth_provider") @db.VarChar(32)
+  authSubject  String     @map("auth_subject") @db.VarChar(255)
+  email        String?    @db.VarChar(320)
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  profile          UserProfile?
+  roles            UserRole[]
+  assets           Asset[]             @relation("AssetOwner")
+  portfolios       Portfolio[]
+  bookmarks        PortfolioBookmark[]
+  sentRequests     ScoutRequest[]      @relation("ScoutSender")
+  receivedRequests ScoutRequest[]      @relation("ScoutRecipient")
+  sentMessages     ChatMessage[]
+  chatReadStates   ChatReadState[]
+  feedbackGiven    MannerFeedback[]    @relation("FeedbackFrom")
+  feedbackReceived MannerFeedback[]    @relation("FeedbackTo")
+  scoutStats       UserScoutStats?
+  blocksCreated    UserBlock[]         @relation("Blocker")
+  blocksReceived   UserBlock[]         @relation("Blocked")
+  reports          Report[]
+  notifications    Notification[]
+
+  @@unique([authProvider, authSubject])
+  @@map("users")
+}
+
+model UserProfile {
+  userId                  String      @id @map("user_id") @db.Uuid
+  avatarAssetId           String?     @map("avatar_asset_id") @db.Uuid
+  nickname                String?     @db.VarChar(20)
+  handle                  String?     @unique @db.VarChar(20)
+  bio                     String?     @db.VarChar(160)
+  communicationPreference String?     @map("communication_preference") @db.VarChar(60)
+  scoutStatus             ScoutStatus @default(SELECTIVE) @map("scout_status")
+  profileCompletedAt      DateTime?   @map("profile_completed_at") @db.Timestamptz(3)
+  createdAt               DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  avatarAsset Asset? @relation("ProfileAvatar", fields: [avatarAssetId], references: [id], onDelete: SetNull)
+
+  @@map("user_profiles")
+}
+
+model RoleGroup {
+  id        String  @id @default(uuid()) @db.Uuid
+  name      String  @unique @db.VarChar(40)
+  slug      String  @unique @db.VarChar(40)
+  sortOrder Int     @map("sort_order")
+  isActive  Boolean @default(true) @map("is_active")
+
+  roles Role[]
+
+  @@map("role_groups")
+}
+
+model Role {
+  id        String  @id @default(uuid()) @db.Uuid
+  groupId   String  @map("group_id") @db.Uuid
+  name      String  @db.VarChar(40)
+  slug      String  @unique @db.VarChar(40)
+  sortOrder Int     @map("sort_order")
+  isActive  Boolean @default(true) @map("is_active")
+
+  group             RoleGroup       @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  userRoles         UserRole[]
+  portfolioRoles    PortfolioRole[]
+  requestedInScouts ScoutRequest[]
+
+  @@unique([groupId, name])
+  @@index([groupId, isActive, sortOrder])
+  @@map("roles")
+}
+
+model UserRole {
+  userId   String @map("user_id") @db.Uuid
+  roleId   String @map("role_id") @db.Uuid
+  priority Int    @db.SmallInt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+  @@unique([userId, priority])
+  @@map("user_roles")
+}
+
+model Asset {
+  id              String      @id @default(uuid()) @db.Uuid
+  ownerId         String      @map("owner_id") @db.Uuid
+  kind            AssetKind
+  storageKey      String      @unique @map("storage_key") @db.VarChar(512)
+  mimeType        String      @map("mime_type") @db.VarChar(127)
+  byteSize        BigInt      @map("byte_size")
+  width           Int?
+  height          Int?
+  durationSeconds Int?        @map("duration_seconds")
+  status          AssetStatus @default(UPLOADING)
+  metadata        Json        @default("{}") @db.JsonB
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  owner           User            @relation("AssetOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  profileAvatars  UserProfile[]   @relation("ProfileAvatar")
+  portfolioPdfs   Portfolio[]     @relation("PortfolioPdf")
+  portfolioVideos Portfolio[]     @relation("PortfolioVideo")
+  pageImages      PortfolioPage[] @relation("PageImage")
+  pageThumbnails  PortfolioPage[] @relation("PageThumbnail")
+  chatMessages    ChatMessage[]
+
+  @@index([ownerId, kind, createdAt])
+  @@map("assets")
+}
+
+model Portfolio {
+  id                  String          @id @default(uuid()) @db.Uuid
+  authorId            String          @map("author_id") @db.Uuid
+  title               String          @db.VarChar(60)
+  pdfAssetId          String          @map("pdf_asset_id") @db.Uuid
+  videoAssetId        String?         @map("video_asset_id") @db.Uuid
+  pageCount           Int?            @map("page_count")
+  coverPage           Int             @default(1) @map("cover_page")
+  status              PortfolioStatus @default(DRAFT)
+  processingErrorCode String?         @map("processing_error_code") @db.VarChar(80)
+  publishedAt         DateTime?       @map("published_at") @db.Timestamptz(3)
+  createdAt           DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  author         User                @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  pdfAsset       Asset               @relation("PortfolioPdf", fields: [pdfAssetId], references: [id], onDelete: Restrict)
+  videoAsset     Asset?              @relation("PortfolioVideo", fields: [videoAssetId], references: [id], onDelete: SetNull)
+  pages          PortfolioPage[]
+  roles          PortfolioRole[]
+  tags           PortfolioTag[]
+  bookmarks      PortfolioBookmark[]
+  sourceRequests ScoutRequest[]
+
+  @@index([status, publishedAt(sort: Desc)])
+  @@index([authorId, status, publishedAt(sort: Desc)])
+  @@map("portfolios")
+}
+
+model PortfolioPage {
+  id               String @id @default(uuid()) @db.Uuid
+  portfolioId      String @map("portfolio_id") @db.Uuid
+  pageNumber       Int    @map("page_number")
+  imageAssetId     String @map("image_asset_id") @db.Uuid
+  thumbnailAssetId String @map("thumbnail_asset_id") @db.Uuid
+  width            Int
+  height           Int
+
+  portfolio      Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  imageAsset     Asset     @relation("PageImage", fields: [imageAssetId], references: [id], onDelete: Restrict)
+  thumbnailAsset Asset     @relation("PageThumbnail", fields: [thumbnailAssetId], references: [id], onDelete: Restrict)
+
+  @@unique([portfolioId, pageNumber])
+  @@map("portfolio_pages")
+}
+
+model PortfolioRole {
+  portfolioId String @map("portfolio_id") @db.Uuid
+  roleId      String @map("role_id") @db.Uuid
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  role      Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([portfolioId, roleId])
+  @@index([roleId, portfolioId])
+  @@map("portfolio_roles")
+}
+
+model Tag {
+  id             String @id @default(uuid()) @db.Uuid
+  name           String @db.VarChar(20)
+  normalizedName String @unique @map("normalized_name") @db.VarChar(20)
+  usageCount     Int    @default(0) @map("usage_count")
+
+  portfolios PortfolioTag[]
+
+  @@map("tags")
+}
+
+model PortfolioTag {
+  portfolioId String @map("portfolio_id") @db.Uuid
+  tagId       String @map("tag_id") @db.Uuid
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  tag       Tag       @relation(fields: [tagId], references: [id], onDelete: Restrict)
+
+  @@id([portfolioId, tagId])
+  @@index([tagId, portfolioId])
+  @@map("portfolio_tags")
+}
+
+model PortfolioBookmark {
+  userId      String   @map("user_id") @db.Uuid
+  portfolioId String   @map("portfolio_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@id([userId, portfolioId])
+  @@map("portfolio_bookmarks")
+}
+
+model ScoutRequest {
+  id                           String             @id @default(uuid()) @db.Uuid
+  senderId                     String             @map("sender_id") @db.Uuid
+  recipientId                  String             @map("recipient_id") @db.Uuid
+  sourcePortfolioId            String             @map("source_portfolio_id") @db.Uuid
+  sourcePortfolioTitleSnapshot String             @map("source_portfolio_title_snapshot") @db.VarChar(60)
+  requestedRoleId              String             @map("requested_role_id") @db.Uuid
+  projectTitle                 String             @map("project_title") @db.VarChar(80)
+  projectSummary               String             @map("project_summary") @db.VarChar(160)
+  estimatedPeriodText          String             @map("estimated_period_text") @db.VarChar(60)
+  weeklyCommitmentText         String             @map("weekly_commitment_text") @db.VarChar(60)
+  teamCompositionText          String             @map("team_composition_text") @db.VarChar(120)
+  message                      String             @db.VarChar(500)
+  status                       ScoutRequestStatus @default(PENDING)
+  respondedAt                  DateTime?          @map("responded_at") @db.Timestamptz(3)
+  canceledAt                   DateTime?          @map("canceled_at") @db.Timestamptz(3)
+  invalidatedAt                DateTime?          @map("invalidated_at") @db.Timestamptz(3)
+  createdAt                    DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                    DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sender          User             @relation("ScoutSender", fields: [senderId], references: [id], onDelete: Restrict)
+  recipient       User             @relation("ScoutRecipient", fields: [recipientId], references: [id], onDelete: Restrict)
+  sourcePortfolio Portfolio        @relation(fields: [sourcePortfolioId], references: [id], onDelete: Restrict)
+  requestedRole   Role             @relation(fields: [requestedRoleId], references: [id], onDelete: Restrict)
+  chatRoom        ChatRoom?
+  mannerFeedback  MannerFeedback[]
+
+  @@index([recipientId, status, createdAt(sort: Desc)])
+  @@index([senderId, status, createdAt(sort: Desc)])
+  @@map("scout_requests")
+}
+
+model ChatRoom {
+  id             String   @id @default(uuid()) @db.Uuid
+  scoutRequestId String   @unique @map("scout_request_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  scoutRequest ScoutRequest    @relation(fields: [scoutRequestId], references: [id], onDelete: Restrict)
+  messages     ChatMessage[]
+  readStates   ChatReadState[]
+
+  @@map("chat_rooms")
+}
+
+model ChatMessage {
+  id              String          @id @default(uuid()) @db.Uuid
+  roomId          String          @map("room_id") @db.Uuid
+  senderId        String?         @map("sender_id") @db.Uuid
+  clientMessageId String?         @map("client_message_id") @db.Uuid
+  type            ChatMessageType
+  body            String?         @db.Text
+  assetId         String?         @map("asset_id") @db.Uuid
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  deletedAt       DateTime?       @map("deleted_at") @db.Timestamptz(3)
+
+  room   ChatRoom        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender User?           @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  asset  Asset?          @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  readBy ChatReadState[] @relation("LastReadMessage")
+
+  @@unique([senderId, clientMessageId])
+  @@index([roomId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("chat_messages")
+}
+
+model ChatReadState {
+  roomId            String   @map("room_id") @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  lastReadMessageId String?  @map("last_read_message_id") @db.Uuid
+  readAt            DateTime @map("read_at") @db.Timestamptz(3)
+
+  room            ChatRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastReadMessage ChatMessage? @relation("LastReadMessage", fields: [lastReadMessageId], references: [id], onDelete: SetNull)
+
+  @@id([roomId, userId])
+  @@map("chat_read_states")
+}
+
+model MannerFeedback {
+  id             String          @id @default(uuid()) @db.Uuid
+  scoutRequestId String          @map("scout_request_id") @db.Uuid
+  fromUserId     String          @map("from_user_id") @db.Uuid
+  toUserId       String          @map("to_user_id") @db.Uuid
+  sentiment      MannerSentiment
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  scoutRequest ScoutRequest @relation(fields: [scoutRequestId], references: [id], onDelete: Restrict)
+  fromUser     User         @relation("FeedbackFrom", fields: [fromUserId], references: [id], onDelete: Restrict)
+  toUser       User         @relation("FeedbackTo", fields: [toUserId], references: [id], onDelete: Restrict)
+
+  @@unique([scoutRequestId, fromUserId])
+  @@index([toUserId, createdAt(sort: Desc)])
+  @@map("manner_feedback")
+}
+
+model UserScoutStats {
+  userId                 String   @id @map("user_id") @db.Uuid
+  scoutSentCount         Int      @default(0) @map("scout_sent_count")
+  scoutReceivedCount     Int      @default(0) @map("scout_received_count")
+  responseCount          Int      @default(0) @map("response_count")
+  responseEligibleCount  Int      @default(0) @map("response_eligible_count")
+  averageResponseSeconds BigInt?  @map("average_response_seconds")
+  mannerTemperature      Decimal  @default(36.5) @map("manner_temperature") @db.Decimal(4, 1)
+  mannerEvaluationCount  Int      @default(0) @map("manner_evaluation_count")
+  mannerFormulaVersion   Int      @default(1) @map("manner_formula_version")
+  updatedAt              DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_scout_stats")
+}
+
+model UserBlock {
+  blockerId String   @map("blocker_id") @db.Uuid
+  blockedId String   @map("blocked_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@id([blockerId, blockedId])
+  @@map("user_blocks")
+}
+
+model Report {
+  id          String           @id @default(uuid()) @db.Uuid
+  reporterId  String           @map("reporter_id") @db.Uuid
+  targetType  ReportTargetType @map("target_type")
+  targetId    String           @map("target_id") @db.Uuid
+  reasonCode  String           @map("reason_code") @db.VarChar(80)
+  description String?          @db.Text
+  status      ReportStatus     @default(OPEN)
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  resolvedAt  DateTime?        @map("resolved_at") @db.Timestamptz(3)
+
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Restrict)
+
+  @@index([targetType, targetId, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+  @@map("reports")
+}
+
+model Notification {
+  id         String           @id @default(uuid()) @db.Uuid
+  userId     String           @map("user_id") @db.Uuid
+  type       NotificationType
+  entityType String           @map("entity_type") @db.VarChar(80)
+  entityId   String           @map("entity_id") @db.Uuid
+  payload    Json             @default("{}") @db.JsonB
+  readAt     DateTime?        @map("read_at") @db.Timestamptz(3)
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt(sort: Desc)])
+  @@map("notifications")
+}

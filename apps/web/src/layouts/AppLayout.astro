@@ -1,0 +1,26 @@
+---
+import "../styles/global.css"
+
+interface Props {
+  description?: string
+  title?: string
+}
+
+const { description = "결과물로 서로를 발견하는 대학생 팀빌딩 플랫폼", title = "Scouty" } =
+  Astro.props
+---
+
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="description" content={description} />
+    <meta name="viewport" content="width=device-width" />
+    <link rel="icon" type="image/svg+xml" href="/brand/scouty.svg" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>
