@@ -1,4 +1,5 @@
 import type {
+  AssetUploadTicket,
   ChatMessage,
   ChatRoomSummary,
   NotificationSummary,
@@ -168,6 +169,27 @@ const inputClass =
   "h-11 rounded-xl border bg-background px-3 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
 const textareaClass =
   "min-h-24 resize-y rounded-xl border bg-background px-3 py-2.5 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+
+async function readVideoDuration(file: File) {
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    return await new Promise<number>((resolve, reject) => {
+      const video = document.createElement("video")
+      video.preload = "metadata"
+      video.onloadedmetadata = () => {
+        if (!Number.isFinite(video.duration) || video.duration <= 0) {
+          reject(new Error("영상 길이를 확인하지 못했어요."))
+          return
+        }
+        resolve(Math.ceil(video.duration))
+      }
+      video.onerror = () => reject(new Error("영상 파일을 읽지 못했어요."))
+      video.src = objectUrl
+    })
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
 
 function OnboardingView({
   initialProfile,
@@ -348,6 +370,11 @@ function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreated: () 
     setIsSubmitting(true)
     setError(undefined)
     try {
+      const videoDurationSeconds =
+        video instanceof File && video.size > 0 ? await readVideoDuration(video) : null
+      if (videoDurationSeconds && videoDurationSeconds > 180) {
+        throw new Error("영상은 최대 3분까지 올릴 수 있어요.")
+      }
       const ticket = await request<PortfolioUploadTicket>("/v1/me/portfolios", {
         method: "POST",
         body: JSON.stringify({
@@ -356,7 +383,13 @@ function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreated: () 
           tags: String(form.get("tags") ?? "").split(","),
           title: form.get("title"),
           ...(video instanceof File && video.size > 0
-            ? { video: { byteSize: video.size, mimeType: video.type } }
+            ? {
+                video: {
+                  byteSize: video.size,
+                  durationSeconds: videoDurationSeconds,
+                  mimeType: video.type,
+                },
+              }
             : {}),
         }),
       })
@@ -445,8 +478,17 @@ function PortfolioCard({
   roles: Role[]
 }) {
   const [isEditing, setIsEditing] = useState(false)
+  const [isMediaUpdating, setIsMediaUpdating] = useState(false)
   const [selectedRoles, setSelectedRoles] = useState(portfolio.roles.map((role) => role.slug))
   const [message, setMessage] = useState<string>()
+  const statusLabel = {
+    archived: "보관됨",
+    draft: "업로드 대기",
+    failed: "처리 실패",
+    processing: "처리 중",
+    published: "게시됨",
+    ready: "게시 준비 완료",
+  }[portfolio.status]
 
   async function action(value: "archive" | "publish" | "retry") {
     try {
@@ -454,6 +496,118 @@ function PortfolioCard({
       await onRefresh()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "프로젝트 상태를 바꾸지 못했어요.")
+    }
+  }
+
+  async function replacePdf(file: File) {
+    setIsMediaUpdating(true)
+    setMessage(undefined)
+    let ticketCreated = false
+    try {
+      const ticket = await request<AssetUploadTicket>(
+        `/v1/me/portfolios/${portfolio.id}/pdf-replacements`,
+        {
+          method: "POST",
+          body: JSON.stringify({ byteSize: file.size, mimeType: "application/pdf" }),
+        },
+      )
+      ticketCreated = true
+      const upload = await fetch(ticket.url, {
+        method: "PUT",
+        headers: ticket.headers,
+        body: file,
+      })
+      if (!upload.ok) throw new Error("새 PDF를 올리지 못했어요.")
+      await request(
+        `/v1/me/portfolios/${portfolio.id}/pdf-replacements/${ticket.assetId}/complete`,
+        { method: "POST" },
+      )
+      setMessage("새 PDF를 처리하고 있어요. 기존 게시물은 그대로 유지돼요.")
+      await onRefresh()
+    } catch (error) {
+      if (ticketCreated) {
+        await request(`/v1/me/portfolios/${portfolio.id}/pdf-replacements`, {
+          method: "DELETE",
+        }).catch(() => undefined)
+      }
+      setMessage(error instanceof Error ? error.message : "PDF를 교체하지 못했어요.")
+    } finally {
+      setIsMediaUpdating(false)
+    }
+  }
+
+  async function cancelPdfReplacement() {
+    try {
+      await request(`/v1/me/portfolios/${portfolio.id}/pdf-replacements`, { method: "DELETE" })
+      setMessage("PDF 교체를 취소했어요.")
+      await onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "PDF 교체를 취소하지 못했어요.")
+    }
+  }
+
+  async function replaceVideo(file: File) {
+    setIsMediaUpdating(true)
+    setMessage(undefined)
+    let ticketCreated = false
+    try {
+      const durationSeconds = await readVideoDuration(file)
+      if (durationSeconds > 180) throw new Error("영상은 최대 3분까지 올릴 수 있어요.")
+      const ticket = await request<AssetUploadTicket>(
+        `/v1/me/portfolios/${portfolio.id}/video-replacements`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            byteSize: file.size,
+            durationSeconds,
+            mimeType: file.type,
+          }),
+        },
+      )
+      ticketCreated = true
+      const upload = await fetch(ticket.url, {
+        method: "PUT",
+        headers: ticket.headers,
+        body: file,
+      })
+      if (!upload.ok) throw new Error("새 영상을 올리지 못했어요.")
+      await request(
+        `/v1/me/portfolios/${portfolio.id}/video-replacements/${ticket.assetId}/complete`,
+        { method: "POST" },
+      )
+      setMessage("영상을 교체했어요.")
+      await onRefresh()
+    } catch (error) {
+      if (ticketCreated) {
+        await request(`/v1/me/portfolios/${portfolio.id}/video-replacements`, {
+          method: "DELETE",
+        }).catch(() => undefined)
+      }
+      setMessage(error instanceof Error ? error.message : "영상을 교체하지 못했어요.")
+    } finally {
+      setIsMediaUpdating(false)
+    }
+  }
+
+  async function cancelVideoReplacement() {
+    try {
+      await request(`/v1/me/portfolios/${portfolio.id}/video-replacements`, {
+        method: "DELETE",
+      })
+      setMessage("영상 교체를 취소했어요.")
+      await onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "영상 교체를 취소하지 못했어요.")
+    }
+  }
+
+  async function removeVideo() {
+    try {
+      await request(`/v1/me/portfolios/${portfolio.id}/video`, { method: "DELETE" })
+      setMessage("영상을 제거했어요.")
+      await onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "영상을 제거하지 못했어요.")
     }
   }
 
@@ -480,7 +634,7 @@ function PortfolioCard({
     <Card className="rounded-2xl p-5 shadow-none">
       <div className="flex items-start justify-between gap-3">
         <h3 className="font-bold">{portfolio.title}</h3>
-        <Badge variant="secondary">{portfolio.status}</Badge>
+        <Badge variant="secondary">{statusLabel}</Badge>
       </div>
       <p className="mt-3 text-sm text-muted-foreground">
         {portfolio.tags.map((tag) => `#${tag}`).join(" ")}
@@ -498,7 +652,7 @@ function PortfolioCard({
         >
           정보 수정
         </button>
-        {portfolio.status === "failed" ? (
+        {portfolio.status === "failed" || portfolio.replacementStatus === "failed" ? (
           <button
             type="button"
             className="font-semibold text-primary"
@@ -507,20 +661,85 @@ function PortfolioCard({
             다시 처리
           </button>
         ) : null}
-        {portfolio.status === "archived" ? (
+        {portfolio.status === "archived" || portfolio.status === "ready" ? (
           <button
             type="button"
             className="font-semibold text-primary"
             onClick={() => action("publish")}
           >
-            다시 게시
+            {portfolio.status === "archived" ? "다시 게시" : "게시"}
           </button>
-        ) : (
+        ) : portfolio.status === "published" ? (
           <button type="button" className="text-muted-foreground" onClick={() => action("archive")}>
             보관
           </button>
-        )}
+        ) : null}
       </div>
+      {portfolio.status === "published" || portfolio.status === "archived" ? (
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-4 text-sm">
+          <label className="cursor-pointer font-semibold text-primary">
+            PDF 교체
+            <input
+              className="sr-only"
+              type="file"
+              accept="application/pdf"
+              disabled={isMediaUpdating || portfolio.replacementStatus !== null}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0]
+                if (file) void replacePdf(file)
+                event.currentTarget.value = ""
+              }}
+            />
+          </label>
+          <label className="cursor-pointer font-semibold text-primary">
+            {portfolio.hasVideo ? "영상 교체" : "영상 추가"}
+            <input
+              className="sr-only"
+              type="file"
+              accept="video/mp4,video/webm,video/quicktime"
+              disabled={isMediaUpdating || portfolio.hasPendingVideoReplacement}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0]
+                if (file) void replaceVideo(file)
+                event.currentTarget.value = ""
+              }}
+            />
+          </label>
+          {portfolio.hasVideo ? (
+            <button type="button" className="text-muted-foreground" onClick={removeVideo}>
+              영상 제거
+            </button>
+          ) : null}
+          {portfolio.replacementStatus && portfolio.replacementStatus !== "processing" ? (
+            <button type="button" className="text-muted-foreground" onClick={cancelPdfReplacement}>
+              교체 취소
+            </button>
+          ) : null}
+          {portfolio.hasPendingVideoReplacement ? (
+            <button
+              type="button"
+              className="text-muted-foreground"
+              onClick={cancelVideoReplacement}
+            >
+              영상 교체 취소
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {portfolio.replacementStatus ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          {portfolio.replacementStatus === "uploading"
+            ? "새 PDF 업로드 대기 중"
+            : portfolio.replacementStatus === "processing"
+              ? "새 PDF 처리 중 · 기존 게시물은 계속 공개돼요."
+              : `새 PDF 처리 실패${portfolio.replacementErrorCode ? ` · ${portfolio.replacementErrorCode}` : ""}`}
+        </p>
+      ) : null}
+      {portfolio.videoErrorCode ? (
+        <p className="mt-3 text-xs text-destructive">
+          영상 처리에 실패했어요. PDF 포트폴리오는 그대로 게시할 수 있어요.
+        </p>
+      ) : null}
       {isEditing ? (
         <form className="mt-5 grid gap-3 border-t pt-5" onSubmit={save}>
           <Field label="제목">

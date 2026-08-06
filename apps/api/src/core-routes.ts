@@ -58,7 +58,7 @@ const portfolioInput = t.Object({
   video: t.Optional(
     t.Object({
       byteSize: t.Number({ maximum: 200 * 1024 * 1024, minimum: 1 }),
-      durationSeconds: t.Optional(t.Number({ maximum: 180, minimum: 1 })),
+      durationSeconds: t.Number({ maximum: 180, minimum: 1 }),
       mimeType: t.Union([
         t.Literal("video/mp4"),
         t.Literal("video/webm"),
@@ -66,6 +66,21 @@ const portfolioInput = t.Object({
       ]),
     }),
   ),
+})
+
+const pdfUploadInput = t.Object({
+  byteSize: t.Number({ maximum: 50 * 1024 * 1024, minimum: 1 }),
+  mimeType: t.Literal("application/pdf"),
+})
+
+const videoUploadInput = t.Object({
+  byteSize: t.Number({ maximum: 200 * 1024 * 1024, minimum: 1 }),
+  durationSeconds: t.Number({ maximum: 180, minimum: 1 }),
+  mimeType: t.Union([
+    t.Literal("video/mp4"),
+    t.Literal("video/webm"),
+    t.Literal("video/quicktime"),
+  ]),
 })
 
 function getCore(options: CoreRouteOptions) {
@@ -256,6 +271,87 @@ export function createCoreRoutes(options: CoreRouteOptions) {
         return { ok: true }
       },
       { params: idParams, detail: { summary: "프로젝트 업로드 완료", tags: ["Portfolio"] } },
+    )
+    .post(
+      "/v1/me/portfolios/:id/pdf-replacements",
+      async ({ body, params, request }) => {
+        const user = await requireUser(request, options)
+        return getCore(options).createPortfolioPdfReplacement(user.id, params.id, body)
+      },
+      {
+        body: pdfUploadInput,
+        params: idParams,
+        detail: { summary: "교체 PDF 업로드 URL", tags: ["Portfolio"] },
+      },
+    )
+    .post(
+      "/v1/me/portfolios/:id/pdf-replacements/:assetId/complete",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).confirmPortfolioPdfReplacement(user.id, params.id, params.assetId)
+        return { ok: true }
+      },
+      {
+        params: t.Object({
+          assetId: t.String({ maxLength: 100, minLength: 1 }),
+          id: t.String({ maxLength: 100, minLength: 1 }),
+        }),
+        detail: { summary: "교체 PDF 업로드 완료", tags: ["Portfolio"] },
+      },
+    )
+    .delete(
+      "/v1/me/portfolios/:id/pdf-replacements",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).cancelPortfolioPdfReplacement(user.id, params.id)
+        return { ok: true }
+      },
+      { params: idParams, detail: { summary: "PDF 교체 취소", tags: ["Portfolio"] } },
+    )
+    .post(
+      "/v1/me/portfolios/:id/video-replacements",
+      async ({ body, params, request }) => {
+        const user = await requireUser(request, options)
+        return getCore(options).createPortfolioVideoReplacement(user.id, params.id, body)
+      },
+      {
+        body: videoUploadInput,
+        params: idParams,
+        detail: { summary: "교체 영상 업로드 URL", tags: ["Portfolio"] },
+      },
+    )
+    .post(
+      "/v1/me/portfolios/:id/video-replacements/:assetId/complete",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).confirmPortfolioVideoReplacement(user.id, params.id, params.assetId)
+        return { ok: true }
+      },
+      {
+        params: t.Object({
+          assetId: t.String({ maxLength: 100, minLength: 1 }),
+          id: t.String({ maxLength: 100, minLength: 1 }),
+        }),
+        detail: { summary: "교체 영상 업로드 완료", tags: ["Portfolio"] },
+      },
+    )
+    .delete(
+      "/v1/me/portfolios/:id/video-replacements",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).cancelPortfolioVideoReplacement(user.id, params.id)
+        return { ok: true }
+      },
+      { params: idParams, detail: { summary: "영상 교체 취소", tags: ["Portfolio"] } },
+    )
+    .delete(
+      "/v1/me/portfolios/:id/video",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).removePortfolioVideo(user.id, params.id)
+        return { ok: true }
+      },
+      { params: idParams, detail: { summary: "프로젝트 영상 제거", tags: ["Portfolio"] } },
     )
     .post(
       "/v1/me/portfolios/:id/publish",

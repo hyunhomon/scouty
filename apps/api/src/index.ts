@@ -29,7 +29,22 @@ const signer =
       }
 
 const processor = {
-  async process(input: { outputPrefix: string; pdfUrl: string; portfolioId: string }) {
+  async inspectVideo(input: { portfolioId: string; videoUrl: string }) {
+    const stub = env.MEDIA_PROCESSOR.get(env.MEDIA_PROCESSOR.idFromName(input.portfolioId))
+    const response = await stub.fetch("http://container/inspect-video", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    })
+    if (!response.ok) throw new Error(`Media processor failed with ${response.status}`)
+    return (await response.json()) as { durationSeconds: number }
+  },
+  async process(input: {
+    outputPrefix: string
+    pdfUrl: string
+    portfolioId: string
+    videoUrl?: string
+  }) {
     const stub = env.MEDIA_PROCESSOR.get(env.MEDIA_PROCESSOR.idFromName(input.portfolioId))
     const response = await stub.fetch("http://container/process", {
       method: "POST",

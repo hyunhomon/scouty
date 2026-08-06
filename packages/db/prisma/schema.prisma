@@ -47,11 +47,20 @@ enum AssetStatus {
 enum PortfolioStatus {
   DRAFT      @map("draft")
   PROCESSING @map("processing")
+  READY      @map("ready")
   PUBLISHED  @map("published")
   FAILED     @map("failed")
   ARCHIVED   @map("archived")
 
   @@map("portfolio_status")
+}
+
+enum PortfolioReplacementStatus {
+  UPLOADING  @map("uploading")
+  PROCESSING @map("processing")
+  FAILED     @map("failed")
+
+  @@map("portfolio_replacement_status")
 }
 
 enum ScoutRequestStatus {
@@ -141,11 +150,11 @@ model User {
 }
 
 model Session {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  tokenHash String   @unique @map("token_hash") @db.VarChar(64)
-  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  tokenHash  String   @unique @map("token_hash") @db.VarChar(64)
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -230,40 +239,49 @@ model Asset {
   metadata        Json        @default("{}") @db.JsonB
   createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  owner           User            @relation("AssetOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  profileAvatars  UserProfile[]   @relation("ProfileAvatar")
-  portfolioPdfs   Portfolio[]     @relation("PortfolioPdf")
-  portfolioVideos Portfolio[]     @relation("PortfolioVideo")
-  pageImages      PortfolioPage[] @relation("PageImage")
-  pageThumbnails  PortfolioPage[] @relation("PageThumbnail")
-  chatMessages    ChatMessage[]
+  owner             User            @relation("AssetOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  profileAvatars    UserProfile[]   @relation("ProfileAvatar")
+  portfolioPdfs     Portfolio[]     @relation("PortfolioPdf")
+  portfolioVideos   Portfolio[]     @relation("PortfolioVideo")
+  replacementPdfs   Portfolio[]     @relation("PortfolioReplacementPdf")
+  replacementVideos Portfolio[]     @relation("PortfolioReplacementVideo")
+  pageImages        PortfolioPage[] @relation("PageImage")
+  pageThumbnails    PortfolioPage[] @relation("PageThumbnail")
+  chatMessages      ChatMessage[]
 
   @@index([ownerId, kind, createdAt])
   @@map("assets")
 }
 
 model Portfolio {
-  id                  String          @id @default(uuid()) @db.Uuid
-  authorId            String          @map("author_id") @db.Uuid
-  title               String          @db.VarChar(60)
-  pdfAssetId          String          @map("pdf_asset_id") @db.Uuid
-  videoAssetId        String?         @map("video_asset_id") @db.Uuid
-  pageCount           Int?            @map("page_count")
-  coverPage           Int             @default(1) @map("cover_page")
-  status              PortfolioStatus @default(DRAFT)
-  processingErrorCode String?         @map("processing_error_code") @db.VarChar(80)
-  publishedAt         DateTime?       @map("published_at") @db.Timestamptz(3)
-  createdAt           DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt           DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                      String                      @id @default(uuid()) @db.Uuid
+  authorId                String                      @map("author_id") @db.Uuid
+  title                   String                      @db.VarChar(60)
+  pdfAssetId              String                      @map("pdf_asset_id") @db.Uuid
+  videoAssetId            String?                     @map("video_asset_id") @db.Uuid
+  replacementPdfAssetId   String?                     @unique @map("replacement_pdf_asset_id") @db.Uuid
+  replacementVideoAssetId String?                     @unique @map("replacement_video_asset_id") @db.Uuid
+  replacementStatus       PortfolioReplacementStatus? @map("replacement_status")
+  replacementErrorCode    String?                     @map("replacement_error_code") @db.VarChar(80)
+  videoProcessingErrorCode String?                    @map("video_processing_error_code") @db.VarChar(80)
+  pageCount               Int?                        @map("page_count")
+  coverPage               Int                         @default(1) @map("cover_page")
+  status                  PortfolioStatus             @default(DRAFT)
+  processingErrorCode     String?                     @map("processing_error_code") @db.VarChar(80)
+  publishedAt             DateTime?                   @map("published_at") @db.Timestamptz(3)
+  createdAt               DateTime                    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  author         User                @relation(fields: [authorId], references: [id], onDelete: Restrict)
-  pdfAsset       Asset               @relation("PortfolioPdf", fields: [pdfAssetId], references: [id], onDelete: Restrict)
-  videoAsset     Asset?              @relation("PortfolioVideo", fields: [videoAssetId], references: [id], onDelete: SetNull)
-  pages          PortfolioPage[]
-  roles          PortfolioRole[]
-  tags           PortfolioTag[]
-  bookmarks      PortfolioBookmark[]
-  sourceRequests ScoutRequest[]
+  author                User                @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  pdfAsset              Asset               @relation("PortfolioPdf", fields: [pdfAssetId], references: [id], onDelete: Restrict)
+  videoAsset            Asset?              @relation("PortfolioVideo", fields: [videoAssetId], references: [id], onDelete: SetNull)
+  replacementPdfAsset   Asset?              @relation("PortfolioReplacementPdf", fields: [replacementPdfAssetId], references: [id], onDelete: SetNull)
+  replacementVideoAsset Asset?              @relation("PortfolioReplacementVideo", fields: [replacementVideoAssetId], references: [id], onDelete: SetNull)
+  pages                 PortfolioPage[]
+  roles                 PortfolioRole[]
+  tags                  PortfolioTag[]
+  bookmarks             PortfolioBookmark[]
+  sourceRequests        ScoutRequest[]
 
   @@index([status, publishedAt(sort: Desc)])
   @@index([authorId, status, publishedAt(sort: Desc)])

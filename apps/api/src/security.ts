@@ -10,9 +10,14 @@ function toBase64Url(bytes: Uint8Array) {
 }
 
 function fromBase64Url(value: string) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
+    throw new Error("Invalid base64url value")
+  }
   const normalized = value.replaceAll("-", "+").replaceAll("_", "/")
   const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="))
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+  if (toBase64Url(bytes) !== value) throw new Error("Non-canonical base64url value")
+  return bytes
 }
 
 export function createRandomToken(byteLength = 32) {

@@ -5,7 +5,16 @@ type ProcessRequest = {
   outputPrefix: string
   pdfUrl: string
   portfolioId: string
+  videoUrl?: string
 }
+
+type InspectVideoRequest = {
+  videoUrl: string
+}
+
+type CompletePortfolioVideo =
+  | { durationSeconds: number; status: "ready" }
+  | { errorCode: string; status: "failed" }
 
 const accessKeyId = process.env.R2_ACCESS_KEY_ID
 const accountId = process.env.R2_ACCOUNT_ID
@@ -43,6 +52,53 @@ async function upload(storageKey: string, filePath: string) {
   })
   if (!response.ok) throw new Error(`R2 upload failed with ${response.status}`)
   return file.size
+}
+
+async function inspectVideo(videoUrl: string) {
+  const workDirectory = `/tmp/scouty-video-${crypto.randomUUID()}`
+  await mkdir(workDirectory, { recursive: true })
+  try {
+    const videoResponse = await fetch(videoUrl)
+    if (!videoResponse.ok) throw new Error(`Video download failed with ${videoResponse.status}`)
+    const declaredSize = Number(videoResponse.headers.get("content-length"))
+    if (Number.isFinite(declaredSize) && declaredSize > 200 * 1024 * 1024) {
+      throw new Error("Video size must be between 1 byte and 200MB")
+    }
+    const videoPath = `${workDirectory}/source-video`
+    await Bun.write(videoPath, videoResponse)
+    const videoSize = Bun.file(videoPath).size
+    if (videoSize < 1 || videoSize > 200 * 1024 * 1024) {
+      throw new Error("Video size must be between 1 byte and 200MB")
+    }
+    const output = await run([
+      "ffprobe",
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=codec_type:format=duration",
+      "-of",
+      "json",
+      videoPath,
+    ])
+    const metadata = JSON.parse(output) as {
+      format?: { duration?: string }
+      streams?: Array<{ codec_type?: string }>
+    }
+    const durationSeconds = Number(metadata.format?.duration)
+    if (
+      !metadata.streams?.some((stream) => stream.codec_type === "video") ||
+      !Number.isFinite(durationSeconds) ||
+      durationSeconds <= 0 ||
+      durationSeconds > 180
+    ) {
+      throw new Error("Video duration must be between 1 second and 3 minutes")
+    }
+    return { durationSeconds: Math.ceil(durationSeconds) }
+  } finally {
+    await rm(workDirectory, { force: true, recursive: true })
+  }
 }
 
 async function processPdf(input: ProcessRequest) {
@@ -113,7 +169,18 @@ async function processPdf(input: ProcessRequest) {
       })
     }
 
-    return { pageCount, pages }
+    let video: CompletePortfolioVideo | undefined
+    if (input.videoUrl) {
+      try {
+        const inspected = await inspectVideo(input.videoUrl)
+        video = { ...inspected, status: "ready" }
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : "video inspection failed")
+        video = { errorCode: "VIDEO_VALIDATION_FAILED", status: "failed" }
+      }
+    }
+
+    return { pageCount, pages, ...(video ? { video } : {}) }
   } finally {
     await rm(workDirectory, { force: true, recursive: true })
   }
@@ -124,11 +191,17 @@ Bun.serve({
   async fetch(request) {
     const url = new URL(request.url)
     if (url.pathname === "/health") return Response.json({ status: "ok" })
-    if (request.method !== "POST" || url.pathname !== "/process") {
+    if (request.method !== "POST") {
       return new Response("Not found", { status: 404 })
     }
     try {
-      const result = await processPdf((await request.json()) as ProcessRequest)
+      const result =
+        url.pathname === "/process"
+          ? await processPdf((await request.json()) as ProcessRequest)
+          : url.pathname === "/inspect-video"
+            ? await inspectVideo(((await request.json()) as InspectVideoRequest).videoUrl)
+            : null
+      if (!result) return new Response("Not found", { status: 404 })
       return Response.json(result)
     } catch (error) {
       console.error(error instanceof Error ? error.message : "media processing failed")

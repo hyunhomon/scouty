@@ -8,6 +8,7 @@ import {
   ScoutRequestStatus as DatabaseScoutRequestStatus,
   ScoutStatus as DatabaseScoutStatus,
   NotificationType,
+  PortfolioReplacementStatus,
   PortfolioStatus,
   Prisma,
   ReportStatus,
@@ -51,10 +52,15 @@ type CoreDependencies = {
   processingQueue: Queue<{ portfolioId: string; requestedAt: string }>
   processor?:
     | {
+        inspectVideo(input: {
+          portfolioId: string
+          videoUrl: string
+        }): Promise<{ durationSeconds: number }>
         process(input: {
           outputPrefix: string
           pdfUrl: string
           portfolioId: string
+          videoUrl?: string
         }): Promise<CompletePortfolioProcessingInput>
       }
     | undefined
@@ -80,8 +86,11 @@ const profileInclude = {
 } satisfies Prisma.UserProfileInclude
 
 const portfolioInclude = {
+  replacementPdfAsset: true,
+  replacementVideoAsset: true,
   roles: { include: { role: true } },
   tags: { include: { tag: true } },
+  videoAsset: true,
 } satisfies Prisma.PortfolioInclude
 
 function scoutStatus(value: DatabaseScoutStatus): ScoutStatus {
@@ -102,12 +111,19 @@ function messageType(value: ChatMessageType): ChatMessage["type"] {
 
 function mapPortfolio(portfolio: Prisma.PortfolioGetPayload<{ include: typeof portfolioInclude }>) {
   return {
+    hasPendingVideoReplacement: Boolean(portfolio.replacementVideoAssetId),
+    hasVideo: portfolio.videoAsset?.status === AssetStatus.READY,
     id: portfolio.id,
     publishedAt: portfolio.publishedAt?.toISOString() ?? null,
+    replacementErrorCode: portfolio.replacementErrorCode,
+    replacementStatus: portfolio.replacementStatus
+      ? (portfolio.replacementStatus.toLowerCase() as "failed" | "processing" | "uploading")
+      : null,
     roles: portfolio.roles.map(({ role }) => ({ name: role.name, slug: role.slug })),
     status: portfolioStatus(portfolio.status),
     tags: portfolio.tags.map(({ tag }) => tag.name),
     title: portfolio.title,
+    videoErrorCode: portfolio.videoProcessingErrorCode,
   } satisfies PortfolioSummary
 }
 
@@ -461,7 +477,8 @@ export class PrismaCoreService implements CoreService {
       input.video &&
       (input.video.byteSize < 1 ||
         input.video.byteSize > 200 * 1024 * 1024 ||
-        (input.video.durationSeconds && input.video.durationSeconds > 180))
+        input.video.durationSeconds < 1 ||
+        input.video.durationSeconds > 180)
     ) {
       throw new ApiError(400, "INVALID_VIDEO", "영상은 최대 200MB, 3분까지 올릴 수 있어요.")
     }
@@ -551,6 +568,300 @@ export class PrismaCoreService implements CoreService {
     return { expiresAt: expiresAt.toISOString(), portfolioId, uploads }
   }
 
+  async createPortfolioPdfReplacement(
+    userId: string,
+    portfolioId: string,
+    input: { byteSize: number; mimeType: "application/pdf" },
+  ) {
+    if (input.byteSize < 1 || input.byteSize > 50 * 1024 * 1024) {
+      throw new ApiError(400, "INVALID_PDF_SIZE", "PDF는 최대 50MB까지 올릴 수 있어요.")
+    }
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: {
+        authorId: userId,
+        id: portfolioId,
+        status: { in: [PortfolioStatus.PUBLISHED, PortfolioStatus.ARCHIVED] },
+      },
+    })
+    if (!portfolio) {
+      throw new ApiError(404, "PORTFOLIO_NOT_FOUND", "게시된 프로젝트를 찾을 수 없어요.")
+    }
+    if (portfolio.replacementPdfAssetId) {
+      throw new ApiError(409, "REPLACEMENT_IN_PROGRESS", "이미 새 PDF를 처리하고 있어요.")
+    }
+
+    const assetId = crypto.randomUUID()
+    const storageKey = `users/${userId}/portfolios/${portfolioId}/replacements/${assetId}/source.pdf`
+    const upload = await this.dependencies.signer.signPut(storageKey, input.mimeType)
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.asset.create({
+        data: {
+          byteSize: BigInt(input.byteSize),
+          id: assetId,
+          kind: AssetKind.PORTFOLIO_PDF,
+          mimeType: input.mimeType,
+          ownerId: userId,
+          storageKey,
+        },
+      }),
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementErrorCode: null,
+          replacementPdfAssetId: assetId,
+          replacementStatus: PortfolioReplacementStatus.UPLOADING,
+        },
+      }),
+    ])
+    return {
+      assetId,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      headers: upload.headers,
+      url: upload.url,
+    }
+  }
+
+  async confirmPortfolioPdfReplacement(userId: string, portfolioId: string, assetId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: {
+        authorId: userId,
+        id: portfolioId,
+        replacementPdfAssetId: assetId,
+        replacementStatus: PortfolioReplacementStatus.UPLOADING,
+      },
+      include: { replacementPdfAsset: true },
+    })
+    const asset = portfolio?.replacementPdfAsset
+    if (!portfolio || !asset) {
+      throw new ApiError(404, "REPLACEMENT_NOT_FOUND", "PDF 교체 정보를 찾을 수 없어요.")
+    }
+    const object = await this.dependencies.assets.head(asset.storageKey)
+    if (!object || object.size !== Number(asset.byteSize)) {
+      throw new ApiError(409, "UPLOAD_INCOMPLETE", "새 PDF 업로드가 완료되지 않았어요.")
+    }
+    await this.assertFileSignature(asset.storageKey, asset.mimeType)
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.asset.update({
+        where: { id: asset.id },
+        data: { status: AssetStatus.READY },
+      }),
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementErrorCode: null,
+          replacementStatus: PortfolioReplacementStatus.PROCESSING,
+        },
+      }),
+    ])
+    await this.dependencies.processingQueue.send({
+      portfolioId,
+      requestedAt: new Date().toISOString(),
+    })
+  }
+
+  async cancelPortfolioPdfReplacement(userId: string, portfolioId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: { authorId: userId, id: portfolioId },
+      select: { replacementPdfAssetId: true, replacementStatus: true },
+    })
+    if (!portfolio?.replacementPdfAssetId) {
+      throw new ApiError(404, "REPLACEMENT_NOT_FOUND", "취소할 PDF 교체 작업이 없어요.")
+    }
+    if (portfolio.replacementStatus === PortfolioReplacementStatus.PROCESSING) {
+      throw new ApiError(409, "REPLACEMENT_PROCESSING", "PDF 처리 중에는 교체를 취소할 수 없어요.")
+    }
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementErrorCode: null,
+          replacementPdfAssetId: null,
+          replacementStatus: null,
+        },
+      }),
+      this.dependencies.database.asset.update({
+        where: { id: portfolio.replacementPdfAssetId },
+        data: { status: AssetStatus.DELETED },
+      }),
+    ])
+  }
+
+  async createPortfolioVideoReplacement(
+    userId: string,
+    portfolioId: string,
+    input: {
+      byteSize: number
+      durationSeconds: number
+      mimeType: "video/mp4" | "video/quicktime" | "video/webm"
+    },
+  ) {
+    if (
+      input.byteSize < 1 ||
+      input.byteSize > 200 * 1024 * 1024 ||
+      input.durationSeconds < 1 ||
+      input.durationSeconds > 180
+    ) {
+      throw new ApiError(400, "INVALID_VIDEO", "영상은 최대 200MB, 3분까지 올릴 수 있어요.")
+    }
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: {
+        authorId: userId,
+        id: portfolioId,
+        status: { in: [PortfolioStatus.PUBLISHED, PortfolioStatus.ARCHIVED] },
+      },
+    })
+    if (!portfolio) throw new ApiError(404, "PORTFOLIO_NOT_FOUND", "프로젝트를 찾을 수 없어요.")
+    if (portfolio.replacementVideoAssetId) {
+      throw new ApiError(409, "VIDEO_REPLACEMENT_IN_PROGRESS", "이미 새 영상을 올리고 있어요.")
+    }
+
+    const assetId = crypto.randomUUID()
+    const extension =
+      input.mimeType === "video/webm"
+        ? "webm"
+        : input.mimeType === "video/quicktime"
+          ? "mov"
+          : "mp4"
+    const storageKey = `users/${userId}/portfolios/${portfolioId}/replacements/${assetId}/video.${extension}`
+    const upload = await this.dependencies.signer.signPut(storageKey, input.mimeType)
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.asset.create({
+        data: {
+          byteSize: BigInt(input.byteSize),
+          durationSeconds: Math.ceil(input.durationSeconds),
+          id: assetId,
+          kind: AssetKind.PORTFOLIO_VIDEO,
+          mimeType: input.mimeType,
+          ownerId: userId,
+          storageKey,
+        },
+      }),
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: { replacementVideoAssetId: assetId, videoProcessingErrorCode: null },
+      }),
+    ])
+    return {
+      assetId,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      headers: upload.headers,
+      url: upload.url,
+    }
+  }
+
+  async confirmPortfolioVideoReplacement(userId: string, portfolioId: string, assetId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: { authorId: userId, id: portfolioId, replacementVideoAssetId: assetId },
+      include: { replacementVideoAsset: true },
+    })
+    const asset = portfolio?.replacementVideoAsset
+    if (!portfolio || !asset) {
+      throw new ApiError(404, "VIDEO_REPLACEMENT_NOT_FOUND", "영상 교체 정보를 찾을 수 없어요.")
+    }
+    const object = await this.dependencies.assets.head(asset.storageKey)
+    if (!object || object.size !== Number(asset.byteSize)) {
+      throw new ApiError(409, "UPLOAD_INCOMPLETE", "새 영상 업로드가 완료되지 않았어요.")
+    }
+    await this.assertFileSignature(asset.storageKey, asset.mimeType)
+    const processor = this.dependencies.processor
+    if (!processor) {
+      throw new ApiError(503, "PROCESSOR_NOT_CONFIGURED", "영상 처리기를 사용할 수 없어요.")
+    }
+    let durationSeconds: number
+    try {
+      const videoUrl = await this.dependencies.signer.signGet(asset.storageKey)
+      durationSeconds = (await processor.inspectVideo({ portfolioId, videoUrl })).durationSeconds
+    } catch {
+      await this.dependencies.database.$transaction([
+        this.dependencies.database.asset.update({
+          where: { id: asset.id },
+          data: { status: AssetStatus.FAILED },
+        }),
+        this.dependencies.database.portfolio.update({
+          where: { id: portfolioId },
+          data: {
+            replacementVideoAssetId: null,
+            videoProcessingErrorCode: "VIDEO_VALIDATION_FAILED",
+          },
+        }),
+      ])
+      throw new ApiError(415, "VIDEO_VALIDATION_FAILED", "영상 길이 또는 형식을 확인해 주세요.")
+    }
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.asset.update({
+        where: { id: asset.id },
+        data: { durationSeconds, status: AssetStatus.READY },
+      }),
+      ...(portfolio.videoAssetId && portfolio.videoAssetId !== asset.id
+        ? [
+            this.dependencies.database.asset.update({
+              where: { id: portfolio.videoAssetId },
+              data: { status: AssetStatus.DELETED },
+            }),
+          ]
+        : []),
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementVideoAssetId: null,
+          videoAssetId: asset.id,
+          videoProcessingErrorCode: null,
+        },
+      }),
+    ])
+    if (portfolio.status === PortfolioStatus.PUBLISHED) await this.projectPortfolio(portfolioId)
+  }
+
+  async cancelPortfolioVideoReplacement(userId: string, portfolioId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: { authorId: userId, id: portfolioId },
+      select: { replacementVideoAssetId: true },
+    })
+    if (!portfolio?.replacementVideoAssetId) {
+      throw new ApiError(404, "VIDEO_REPLACEMENT_NOT_FOUND", "취소할 영상 교체 작업이 없어요.")
+    }
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: { replacementVideoAssetId: null },
+      }),
+      this.dependencies.database.asset.update({
+        where: { id: portfolio.replacementVideoAssetId },
+        data: { status: AssetStatus.DELETED },
+      }),
+    ])
+  }
+
+  async removePortfolioVideo(userId: string, portfolioId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: { authorId: userId, id: portfolioId },
+      select: { replacementVideoAssetId: true, status: true, videoAssetId: true },
+    })
+    if (!portfolio) throw new ApiError(404, "PORTFOLIO_NOT_FOUND", "프로젝트를 찾을 수 없어요.")
+    const removedAssetIds = [portfolio.videoAssetId, portfolio.replacementVideoAssetId].filter(
+      (id): id is string => Boolean(id),
+    )
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementVideoAssetId: null,
+          videoAssetId: null,
+          videoProcessingErrorCode: null,
+        },
+      }),
+      ...(removedAssetIds.length > 0
+        ? [
+            this.dependencies.database.asset.updateMany({
+              where: { id: { in: removedAssetIds } },
+              data: { status: AssetStatus.DELETED },
+            }),
+          ]
+        : []),
+    ])
+    if (portfolio.status === PortfolioStatus.PUBLISHED) await this.projectPortfolio(portfolioId)
+  }
+
   async confirmPortfolioUpload(userId: string, portfolioId: string) {
     const portfolio = await this.dependencies.database.portfolio.findFirst({
       where: { authorId: userId, id: portfolioId, status: PortfolioStatus.DRAFT },
@@ -581,14 +892,6 @@ export class PrismaCoreService implements CoreService {
         where: { id: portfolio.pdfAssetId },
         data: { status: AssetStatus.READY },
       }),
-      ...(portfolio.videoAssetId
-        ? [
-            this.dependencies.database.asset.update({
-              where: { id: portfolio.videoAssetId },
-              data: { status: AssetStatus.READY },
-            }),
-          ]
-        : []),
       this.dependencies.database.portfolio.update({
         where: { id: portfolio.id },
         data: { processingErrorCode: null, status: PortfolioStatus.PROCESSING },
@@ -605,7 +908,11 @@ export class PrismaCoreService implements CoreService {
       input.pageCount < 1 ||
       input.pageCount > 50 ||
       input.pages.length !== input.pageCount ||
-      input.pages.some((page, index) => page.pageNumber !== index + 1)
+      input.pages.some((page, index) => page.pageNumber !== index + 1) ||
+      (input.video?.status === "ready" &&
+        (!Number.isFinite(input.video.durationSeconds) ||
+          input.video.durationSeconds < 1 ||
+          input.video.durationSeconds > 180))
     ) {
       throw new ApiError(400, "INVALID_PROCESSED_PAGES", "변환된 페이지 정보가 올바르지 않아요.")
     }
@@ -613,11 +920,24 @@ export class PrismaCoreService implements CoreService {
     const portfolio = await this.dependencies.database.portfolio.findUnique({
       where: { id: portfolioId },
     })
-    if (!portfolio || portfolio.status !== PortfolioStatus.PROCESSING) {
+    const isReplacement = Boolean(
+      portfolio?.replacementPdfAssetId &&
+        portfolio.replacementStatus === PortfolioReplacementStatus.PROCESSING,
+    )
+    if (!portfolio || (portfolio.status !== PortfolioStatus.PROCESSING && !isReplacement)) {
       throw new ApiError(409, "PORTFOLIO_NOT_PROCESSING", "처리 중인 프로젝트가 아니에요.")
     }
+    const videoResult = portfolio.videoAssetId
+      ? (input.video ?? { errorCode: "VIDEO_VALIDATION_FAILED", status: "failed" as const })
+      : undefined
 
     await this.dependencies.database.$transaction(async (transaction) => {
+      const previousPages = isReplacement
+        ? await transaction.portfolioPage.findMany({
+            where: { portfolioId },
+            select: { imageAssetId: true, thumbnailAssetId: true },
+          })
+        : []
       await transaction.portfolioPage.deleteMany({ where: { portfolioId } })
       for (const page of input.pages) {
         const image = await transaction.asset.create({
@@ -655,14 +975,46 @@ export class PrismaCoreService implements CoreService {
           },
         })
       }
+      if (!isReplacement && portfolio.videoAssetId && videoResult) {
+        await transaction.asset.update({
+          where: { id: portfolio.videoAssetId },
+          data:
+            videoResult.status === "ready"
+              ? {
+                  durationSeconds: Math.ceil(videoResult.durationSeconds),
+                  status: AssetStatus.READY,
+                }
+              : { status: AssetStatus.FAILED },
+        })
+      }
       await transaction.portfolio.update({
         where: { id: portfolioId },
-        data: {
-          pageCount: input.pageCount,
-          publishedAt: new Date(),
-          status: PortfolioStatus.PUBLISHED,
-        },
+        data: isReplacement
+          ? {
+              pageCount: input.pageCount,
+              pdfAssetId: portfolio.replacementPdfAssetId ?? portfolio.pdfAssetId,
+              replacementErrorCode: null,
+              replacementPdfAssetId: null,
+              replacementStatus: null,
+            }
+          : {
+              pageCount: input.pageCount,
+              processingErrorCode: null,
+              status: PortfolioStatus.READY,
+              videoProcessingErrorCode:
+                videoResult?.status === "failed" ? videoResult.errorCode : null,
+            },
       })
+      if (isReplacement) {
+        const replacedAssetIds = [
+          portfolio.pdfAssetId,
+          ...previousPages.flatMap((page) => [page.imageAssetId, page.thumbnailAssetId]),
+        ]
+        await transaction.asset.updateMany({
+          where: { id: { in: replacedAssetIds } },
+          data: { status: AssetStatus.DELETED },
+        })
+      }
       await transaction.notification.create({
         data: {
           entityId: portfolioId,
@@ -672,7 +1024,9 @@ export class PrismaCoreService implements CoreService {
         },
       })
     })
-    await this.projectPortfolio(portfolioId)
+    if (isReplacement && portfolio.status === PortfolioStatus.PUBLISHED) {
+      await this.projectPortfolio(portfolioId)
+    }
   }
 
   async publishPortfolio(userId: string, portfolioId: string) {
@@ -684,20 +1038,44 @@ export class PrismaCoreService implements CoreService {
     if (!portfolio.pageCount || portfolio._count.pages !== portfolio.pageCount) {
       throw new ApiError(409, "PORTFOLIO_NOT_READY", "페이지 처리가 끝난 뒤 게시할 수 있어요.")
     }
+    if (
+      portfolio.status !== PortfolioStatus.READY &&
+      portfolio.status !== PortfolioStatus.ARCHIVED
+    ) {
+      throw new ApiError(409, "PORTFOLIO_NOT_READY", "게시할 수 있는 프로젝트가 아니에요.")
+    }
     await this.dependencies.database.portfolio.update({
       where: { id: portfolioId },
-      data: { publishedAt: portfolio.publishedAt ?? new Date(), status: PortfolioStatus.PUBLISHED },
+      data: { publishedAt: new Date(), status: PortfolioStatus.PUBLISHED },
     })
     await this.projectPortfolio(portfolioId)
   }
 
   async retryPortfolio(userId: string, portfolioId: string) {
-    const result = await this.dependencies.database.portfolio.updateMany({
+    const initial = await this.dependencies.database.portfolio.updateMany({
       where: { authorId: userId, id: portfolioId, status: PortfolioStatus.FAILED },
       data: { processingErrorCode: null, status: PortfolioStatus.PROCESSING },
     })
-    if (result.count === 0) {
-      throw new ApiError(409, "PORTFOLIO_NOT_RETRYABLE", "다시 처리할 수 있는 프로젝트가 아니에요.")
+    if (initial.count === 0) {
+      const replacement = await this.dependencies.database.portfolio.updateMany({
+        where: {
+          authorId: userId,
+          id: portfolioId,
+          replacementPdfAssetId: { not: null },
+          replacementStatus: PortfolioReplacementStatus.FAILED,
+        },
+        data: {
+          replacementErrorCode: null,
+          replacementStatus: PortfolioReplacementStatus.PROCESSING,
+        },
+      })
+      if (replacement.count === 0) {
+        throw new ApiError(
+          409,
+          "PORTFOLIO_NOT_RETRYABLE",
+          "다시 처리할 수 있는 프로젝트가 아니에요.",
+        )
+      }
     }
     await this.dependencies.processingQueue.send({
       portfolioId,
@@ -1723,26 +2101,67 @@ export class PrismaCoreService implements CoreService {
     const processor = this.dependencies.processor
     const portfolio = await this.dependencies.database.portfolio.findUnique({
       where: { id: portfolioId },
-      include: { pdfAsset: true },
+      include: { pdfAsset: true, replacementPdfAsset: true, videoAsset: true },
     })
-    if (!portfolio || portfolio.status !== PortfolioStatus.PROCESSING) return
+    const isReplacement = Boolean(
+      portfolio?.replacementPdfAsset &&
+        portfolio.replacementStatus === PortfolioReplacementStatus.PROCESSING,
+    )
+    if (!portfolio || (portfolio.status !== PortfolioStatus.PROCESSING && !isReplacement)) return
     if (!processor) {
-      await this.failProcessing(portfolioId, portfolio.authorId, "PROCESSOR_NOT_CONFIGURED")
+      if (isReplacement) {
+        await this.failReplacement(portfolioId, portfolio.authorId, "PROCESSOR_NOT_CONFIGURED")
+      } else {
+        await this.failProcessing(portfolioId, portfolio.authorId, "PROCESSOR_NOT_CONFIGURED")
+      }
       return
     }
 
     try {
-      const pdfUrl = await this.dependencies.signer.signGet(portfolio.pdfAsset.storageKey)
+      const sourcePdf = isReplacement ? portfolio.replacementPdfAsset : portfolio.pdfAsset
+      if (!sourcePdf) throw new Error("Replacement PDF is missing")
+      const pdfUrl = await this.dependencies.signer.signGet(sourcePdf.storageKey)
+      const videoUrl =
+        !isReplacement && portfolio.videoAsset
+          ? await this.dependencies.signer.signGet(portfolio.videoAsset.storageKey)
+          : undefined
       const result = await processor.process({
-        outputPrefix: `users/${portfolio.authorId}/portfolios/${portfolioId}/pages`,
+        outputPrefix: isReplacement
+          ? `users/${portfolio.authorId}/portfolios/${portfolioId}/replacements/${sourcePdf.id}/pages`
+          : `users/${portfolio.authorId}/portfolios/${portfolioId}/pages`,
         pdfUrl,
         portfolioId,
+        ...(videoUrl ? { videoUrl } : {}),
       })
       await this.completePortfolioProcessing(portfolioId, result)
     } catch {
-      await this.failProcessing(portfolioId, portfolio.authorId, "PDF_CONVERSION_FAILED")
+      if (isReplacement) {
+        await this.failReplacement(portfolioId, portfolio.authorId, "PDF_CONVERSION_FAILED")
+      } else {
+        await this.failProcessing(portfolioId, portfolio.authorId, "PDF_CONVERSION_FAILED")
+      }
       throw new Error("Portfolio processing failed")
     }
+  }
+
+  private async failReplacement(portfolioId: string, userId: string, code: string) {
+    await this.dependencies.database.$transaction([
+      this.dependencies.database.portfolio.update({
+        where: { id: portfolioId },
+        data: {
+          replacementErrorCode: code,
+          replacementStatus: PortfolioReplacementStatus.FAILED,
+        },
+      }),
+      this.dependencies.database.notification.create({
+        data: {
+          entityId: portfolioId,
+          entityType: "portfolio",
+          type: NotificationType.PORTFOLIO_PROCESSING_FAILED,
+          userId,
+        },
+      }),
+    ])
   }
 
   private async failProcessing(portfolioId: string, userId: string, code: string) {
@@ -1872,6 +2291,7 @@ export class PrismaCoreService implements CoreService {
     })
     const profile = portfolio?.author.profile
     if (!portfolio || !profile?.handle || !profile.nickname || !portfolio.publishedAt) return
+    const hasReadyVideo = portfolio.videoAsset?.status === AssetStatus.READY
 
     const pageStatements = portfolio.pages.map((page) =>
       this.dependencies.edgeDatabase
@@ -1930,8 +2350,8 @@ export class PrismaCoreService implements CoreService {
           portfolio.pages[0]
             ? `${this.dependencies.apiOrigin}/v1/assets/${portfolio.pages[0].thumbnailAssetId}`
             : null,
-          portfolio.videoAssetId ? 1 : 0,
-          portfolio.videoAssetId
+          hasReadyVideo ? 1 : 0,
+          hasReadyVideo
             ? `${this.dependencies.apiOrigin}/v1/assets/${portfolio.videoAssetId}`
             : null,
           JSON.stringify(portfolio.roles.map(({ role }) => role.slug)),

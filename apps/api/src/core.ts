@@ -29,12 +29,17 @@ export type ProfileSummary = {
 }
 
 export type PortfolioSummary = {
+  hasPendingVideoReplacement: boolean
+  hasVideo: boolean
   id: string
   publishedAt: string | null
-  status: "archived" | "draft" | "failed" | "processing" | "published"
+  replacementErrorCode: string | null
+  replacementStatus: "failed" | "processing" | "uploading" | null
+  status: "archived" | "draft" | "failed" | "processing" | "published" | "ready"
   tags: string[]
   title: string
   roles: Array<{ name: string; slug: string }>
+  videoErrorCode: string | null
 }
 
 export type PublicProfile = ProfileSummary & {
@@ -58,7 +63,7 @@ export type CreatePortfolioInput = {
   title: string
   video?: {
     byteSize: number
-    durationSeconds?: number
+    durationSeconds: number
     mimeType: "video/mp4" | "video/quicktime" | "video/webm"
   }
 }
@@ -101,6 +106,7 @@ export type ProcessedPortfolioPage = {
 export type CompletePortfolioProcessingInput = {
   pageCount: number
   pages: ProcessedPortfolioPage[]
+  video?: { durationSeconds: number; status: "ready" } | { errorCode: string; status: "failed" }
 }
 
 export type CreateScoutRequestInput = {
@@ -173,17 +179,43 @@ export type ReportTargetType = "message" | "portfolio" | "scout_request" | "user
 
 export interface CoreService {
   archivePortfolio(userId: string, portfolioId: string): Promise<void>
+  cancelPortfolioPdfReplacement(userId: string, portfolioId: string): Promise<void>
+  cancelPortfolioVideoReplacement(userId: string, portfolioId: string): Promise<void>
   completePortfolioProcessing(
     portfolioId: string,
     input: CompletePortfolioProcessingInput,
   ): Promise<void>
   confirmPortfolioUpload(userId: string, portfolioId: string): Promise<void>
+  confirmPortfolioPdfReplacement(
+    userId: string,
+    portfolioId: string,
+    assetId: string,
+  ): Promise<void>
+  confirmPortfolioVideoReplacement(
+    userId: string,
+    portfolioId: string,
+    assetId: string,
+  ): Promise<void>
   confirmAvatarUpload(userId: string, assetId: string): Promise<void>
   createAvatarUpload(
     userId: string,
     input: { byteSize: number; mimeType: "image/jpeg" | "image/png" | "image/webp" },
   ): Promise<AssetUploadTicket>
   createPortfolio(userId: string, input: CreatePortfolioInput): Promise<PortfolioUploadTicket>
+  createPortfolioPdfReplacement(
+    userId: string,
+    portfolioId: string,
+    input: { byteSize: number; mimeType: "application/pdf" },
+  ): Promise<AssetUploadTicket>
+  createPortfolioVideoReplacement(
+    userId: string,
+    portfolioId: string,
+    input: {
+      byteSize: number
+      durationSeconds: number
+      mimeType: "video/mp4" | "video/quicktime" | "video/webm"
+    },
+  ): Promise<AssetUploadTicket>
   createChatImageUpload(
     userId: string,
     roomId: string,
@@ -214,6 +246,7 @@ export interface CoreService {
   ): Promise<void>
   moderatePortfolio(userId: string, portfolioId: string): Promise<void>
   publishPortfolio(userId: string, portfolioId: string): Promise<void>
+  removePortfolioVideo(userId: string, portfolioId: string): Promise<void>
   retryPortfolio(userId: string, portfolioId: string): Promise<void>
   report(
     userId: string,
