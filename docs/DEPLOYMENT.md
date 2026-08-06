@@ -7,9 +7,11 @@ Scouty는 자동 CD를 운영하지 않는다. GitHub Actions는 PR의 `CI` 검�
 ## 사전 조건
 
 - Wrangler가 Hyunhomon Cloudflare account에 로그인되어 있어야 한다.
+- Cloudflare Workers Paid plan이 활성화되어 Containers를 배포할 수 있어야 한다.
 - Docker Desktop이 실행 중이어야 한다. API 배포 시 PDF 처리 Container 이미지를 빌드한다.
-- `DATABASE_URL`은 production PostgreSQL 직접 연결 문자열이어야 한다.
-- `apps/api/wrangler.jsonc`에 production `HYPERDRIVE` binding이 있어야 한다.
+- production PostgreSQL을 먼저 만들고 `DATABASE_URL`에 직접 연결 문자열을 설정한다.
+- PostgreSQL을 가리키는 Hyperdrive config를 만든 뒤 `apps/api/wrangler.jsonc`에 production `HYPERDRIVE` binding을 추가한다.
+- `scouty-assets`용 R2 S3 API token을 만들고 access key와 secret key를 준비한다.
 - `scouty-api` Worker runtime secret이 등록되어 있어야 한다.
 
 | 이름                   | 용도                                     |
