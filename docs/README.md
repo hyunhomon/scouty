@@ -13,6 +13,7 @@ Scouty의 제품·디자인·기술 결정을 한곳에서 찾기 위한 문서 
 | [접근성](./ACCESSIBILITY.md) | 누구나 핵심 과업을 수행하게 하려면 무엇을 지켜야 하는가? | Design, Frontend, QA |
 | [기술 기준](./TECH_STACK.md) | 어떤 구조와 기술 경계를 사용하는가? | Frontend, Backend, Infra |
 | [개발 기준](./DEVELOPMENT_GUIDE.md) | 구현과 검토를 어떤 방식으로 진행하는가? | Engineering, QA |
+| [프로덕션 배포](./DEPLOYMENT.md) | 무엇을 준비하고 어떤 순서로 배포·복구하는가? | Engineering, Operations |
 
 ## 결정 우선순위
 

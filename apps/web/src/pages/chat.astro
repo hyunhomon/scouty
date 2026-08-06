@@ -1,0 +1,8 @@
+---
+import { ProductWorkspace } from "@/components/ProductWorkspace"
+import WorkspaceLayout from "@/layouts/WorkspaceLayout.astro"
+---
+
+<WorkspaceLayout title="채팅">
+  <ProductWorkspace view="chat" client:only="react" />
+</WorkspaceLayout>

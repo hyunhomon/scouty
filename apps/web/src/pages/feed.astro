@@ -14,7 +14,10 @@ import AppLayout from "@/layouts/AppLayout.astro"
         <img src="/brand/scouty.png" alt="" width="36" height="36" class="size-9 rounded-xl" />
         <span class="text-lg font-extrabold tracking-tight">Scouty</span>
       </a>
-      <a class={buttonVariants({ variant: "ghost", size: "sm" })} href="/">서비스 소개</a>
+      <nav class="flex items-center gap-1" aria-label="피드 메뉴">
+        <a class={buttonVariants({ variant: "ghost", size: "sm" })} href="/scout">스카우트</a>
+        <a class={buttonVariants({ variant: "ghost", size: "sm" })} href="/me">내 프로필</a>
+      </nav>
     </div>
   </header>
 

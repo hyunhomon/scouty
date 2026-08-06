@@ -1,10 +1,10 @@
 import type { DiscoveryPortfolio, DiscoveryPortfolioPage, DiscoveryRole } from "@scouty/api"
-import { FileImage, Search, Video } from "lucide-react"
+import { Bookmark, FileImage, Search, Video } from "lucide-react"
 import { type SubmitEvent, useEffect, useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { api } from "@/lib/api"
+import { api, apiUrl } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 export type DiscoveryFeedClient = {
@@ -39,19 +39,23 @@ const defaultClient: DiscoveryFeedClient = {
 type FeedStatus = "error" | "loading" | "ready"
 
 function ProjectCard({
+  isBookmarked,
+  onBookmark,
   portfolio,
   roleNames,
 }: {
+  isBookmarked: boolean
+  onBookmark: () => void
   portfolio: DiscoveryPortfolio
   roleNames: Map<string, string>
 }) {
   return (
-    <a
-      href={`/portfolios/${encodeURIComponent(portfolio.id)}`}
-      className="block rounded-2xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-    >
-      <Card className="h-full overflow-hidden rounded-2xl shadow-none transition hover:border-primary/30">
-        <article>
+    <Card className="h-full overflow-hidden rounded-2xl shadow-none transition hover:border-primary/30">
+      <article>
+        <a
+          href={`/portfolios/${encodeURIComponent(portfolio.id)}`}
+          className="block outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
           <div className="aspect-[4/3] overflow-hidden bg-muted">
             {portfolio.coverUrl ? (
               <img
@@ -95,9 +99,20 @@ function ProjectCard({
               ))}
             </div>
           </div>
-        </article>
-      </Card>
-    </a>
+        </a>
+        <div className="border-t px-5 py-3">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"
+            aria-pressed={isBookmarked}
+            onClick={onBookmark}
+          >
+            <Bookmark aria-hidden="true" size={17} fill={isBookmarked ? "currentColor" : "none"} />
+            {isBookmarked ? "저장됨" : "저장"}
+          </button>
+        </div>
+      </article>
+    </Card>
   )
 }
 
@@ -131,6 +146,7 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
   const [searchInput, setSearchInput] = useState("")
   const [searchQuery, setSearchQuery] = useState<string>()
   const [portfolios, setPortfolios] = useState<DiscoveryPortfolio[]>([])
+  const [bookmarks, setBookmarks] = useState<Set<string>>(new Set())
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [status, setStatus] = useState<FeedStatus>("loading")
   const [roleError, setRoleError] = useState(false)
@@ -153,6 +169,16 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
       active = false
     }
   }, [client])
+
+  useEffect(() => {
+    fetch(`${apiUrl}/v1/me/bookmarks`, { credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) return
+        const saved = (await response.json()) as Array<{ id: string }>
+        setBookmarks(new Set(saved.map((portfolio) => portfolio.id)))
+      })
+      .catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -218,6 +244,27 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
     } finally {
       setIsLoadingMore(false)
     }
+  }
+
+  async function toggleBookmark(portfolioId: string) {
+    const isBookmarked = bookmarks.has(portfolioId)
+    const response = await fetch(`${apiUrl}/v1/me/bookmarks/${encodeURIComponent(portfolioId)}`, {
+      credentials: "include",
+      method: isBookmarked ? "DELETE" : "PUT",
+    })
+    if (response.status === 401) {
+      window.location.assign(
+        `${apiUrl}/v1/auth/google/start?returnTo=${encodeURIComponent(window.location.pathname)}`,
+      )
+      return
+    }
+    if (!response.ok) return
+    setBookmarks((current) => {
+      const next = new Set(current)
+      if (isBookmarked) next.delete(portfolioId)
+      else next.add(portfolioId)
+      return next
+    })
   }
 
   return (
@@ -322,7 +369,13 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {portfolios.map((portfolio) => (
-              <ProjectCard key={portfolio.id} portfolio={portfolio} roleNames={roleNames} />
+              <ProjectCard
+                key={portfolio.id}
+                portfolio={portfolio}
+                roleNames={roleNames}
+                isBookmarked={bookmarks.has(portfolio.id)}
+                onBookmark={() => toggleBookmark(portfolio.id)}
+              />
             ))}
           </div>
           {nextCursor ? (

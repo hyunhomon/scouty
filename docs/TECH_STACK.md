@@ -82,6 +82,9 @@ Bun workspace만 사용하고 초기에는 Turborepo 같은 별도 task orchestr
 | `HYPERDRIVE` | Hyperdrive | PostgreSQL 연결과 connection pooling |
 | `EDGE_DB` | D1Database | 읽기 모델·에지 캐시 |
 | `ASSETS` | R2Bucket | PDF, 페이지 이미지, 영상, 채팅 이미지 |
+| `PORTFOLIO_PROCESSING` | Queue | PDF 변환 작업 전달과 재시도 |
+| `CHAT_ROOMS` | Durable Object | 채팅방별 WebSocket fan-out |
+| `MEDIA_PROCESSOR` | Container | PDF 페이지·썸네일 생성 |
 
 ### API 규칙
 
@@ -109,8 +112,9 @@ Workers에서는 `@prisma/adapter-pg`와 `HYPERDRIVE.connectionString`으로 Pri
 
 ### D1: 파생 읽기 데이터
 
-- 초기 스캐폴딩에서는 binding과 migration 규칙만 만들고 제품 테이블은 만들지 않는다.
-- 실제 읽기 모델이 정해지기 전 범용 캐시 테이블을 추측해 추가하지 않는다.
+- 공개 피드와 상세 조회에 필요한 포트폴리오·페이지·역할 projection만 저장한다.
+- 포트폴리오 게시·수정·보관과 프로필 변경 시 관련 projection을 갱신한다.
+- 매일 PostgreSQL 원본에서 전체 projection을 다시 만들어 누락을 복구한다.
 - D1 데이터는 PostgreSQL 원본에서 재생성 가능해야 한다.
 - 강한 일관성이나 다중 레코드 트랜잭션이 필요한 판단에 사용하지 않는다.
 - Prisma D1 adapter 대신 native binding을 사용한다.
@@ -154,17 +158,20 @@ bun install
 
 - `web`과 `api`는 독립적으로 build·deploy한다.
 - Cloudflare 프로젝트 설정은 각 앱의 `wrangler.jsonc`를 기준으로 한다.
-- preview와 production은 별도 origin과 secret을 사용한다.
+- MVP 배포 환경은 production 하나만 운영한다.
 - DB migration은 API 배포 전에 호환 가능한 순서로 적용한다.
 - 배포 과정에서 원격 D1·R2·PostgreSQL 데이터를 자동 초기화하지 않는다.
-- CI는 검사와 dry-run build만 수행하고 배포 workflow는 Cloudflare 계정 연결 후 별도 추가한다.
+- CI는 검사와 dry-run build를 수행하고, 성공한 `main` 커밋만 production workflow가 배포한다.
+- 자동 배포는 seed를 실행하지 않는다. 운영 역할 변경은 별도 수동 작업으로 수행한다.
+- 세부 순서와 필수 secret은 [프로덕션 배포](./DEPLOYMENT.md)를 따른다.
 
 ## 10. 주요 제약과 후속 결정
 
 - Elysia의 Cloudflare Worker adapter는 현재 experimental이므로 dependency update마다 build와 runtime test가 필요하다.
 - PostgreSQL 호스팅 공급자는 아직 정하지 않았으며 표준 PostgreSQL + Hyperdrive 계약만 고정한다.
-- 실시간 채팅 전송 방식, PDF 변환 worker/queue, OAuth 공급자는 후속 설계에서 결정한다.
-- D1 읽기 모델은 실제 쿼리 병목과 일관성 요구를 확인한 뒤 설계한다.
+- 인증은 Google OAuth, 실시간 fan-out은 Durable Objects WebSocket, PDF 변환은 Queue와 Cloudflare Container를 사용한다.
+- Container 배포에는 Workers Paid plan과 Docker image build 환경이 필요하다.
+- D1은 공개 탐색 projection에만 사용하며 권한·상태 전이는 항상 PostgreSQL에서 판단한다.
 
 ## 11. 참고
 
@@ -175,4 +182,7 @@ bun install
 - [Prisma ORM with Hyperdrive](https://developers.cloudflare.com/hyperdrive/examples/connect-to-postgres/postgres-drivers-and-libraries/prisma-orm/)
 - [Cloudflare D1 with Prisma](https://docs.prisma.io/docs/orm/v6/overview/databases/cloudflare-d1)
 - [Cloudflare R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)
+- [Cloudflare Queues](https://developers.cloudflare.com/queues/)
+- [Cloudflare Durable Objects WebSockets](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)
+- [Cloudflare Containers](https://developers.cloudflare.com/containers/)
 - [Cloudflare Workers Vitest integration](https://developers.cloudflare.com/workers/testing/vitest-integration/)

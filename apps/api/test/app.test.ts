@@ -50,5 +50,34 @@ describe("OpenAPI reference", () => {
     expect(response.status).toBe(200)
     expect(specification.paths).toHaveProperty("/health")
     expect(specification.paths).toHaveProperty("/ready")
+    expect(specification.paths).toHaveProperty("/v1/auth/google/start")
+    expect(specification.paths).toHaveProperty("/v1/scout/requests")
+    expect(specification.paths).toHaveProperty("/v1/chat/rooms/{id}/messages")
+  })
+})
+
+describe("API security boundary", () => {
+  it("rejects protected routes without a session", async () => {
+    const app = createApp({ aot: false })
+    const response = await app.handle(new Request("https://scouty.test/v1/me"))
+
+    expect(response.status).toBe(401)
+    await expect(response.json()).resolves.toEqual({
+      code: "AUTHENTICATION_REQUIRED",
+      message: "로그인이 필요해요.",
+    })
+  })
+
+  it("rejects a cross-origin mutation before touching application state", async () => {
+    const app = createApp({ aot: false, corsOrigins: "https://greeney.life" })
+    const response = await app.handle(
+      new Request("https://scouty.test/v1/auth/logout", {
+        headers: { origin: "https://attacker.test" },
+        method: "POST",
+      }),
+    )
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toMatchObject({ code: "INVALID_ORIGIN" })
   })
 })

@@ -1,0 +1,8 @@
+---
+import { ProductWorkspace } from "@/components/ProductWorkspace"
+import WorkspaceLayout from "@/layouts/WorkspaceLayout.astro"
+---
+
+<WorkspaceLayout title="프로필 만들기">
+  <ProductWorkspace view="onboarding" client:only="react" />
+</WorkspaceLayout>

@@ -1,0 +1,8 @@
+---
+import { PublicProfileRoute } from "@/components/ProductWorkspace"
+import WorkspaceLayout from "@/layouts/WorkspaceLayout.astro"
+---
+
+<WorkspaceLayout title="프로필">
+  <PublicProfileRoute client:only="react" />
+</WorkspaceLayout>

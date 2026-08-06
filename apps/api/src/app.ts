@@ -2,6 +2,8 @@ import { openapi } from "@elysia/openapi"
 import { cors } from "@elysiajs/cors"
 import { Elysia, t } from "elysia"
 import { CloudflareAdapter } from "elysia/adapter/cloudflare-worker"
+import { ApiError, type CoreService, parseSessionToken } from "./core"
+import { type CoreRouteOptions, createCoreRoutes } from "./core-routes"
 import {
   type DiscoveryRepository,
   decodeDiscoveryCursor,
@@ -9,6 +11,20 @@ import {
 } from "./discovery"
 import type { ReadinessResult } from "./readiness"
 
+export type {
+  AssetUploadTicket,
+  ChatMessage,
+  ChatRoomSummary,
+  CoreService,
+  NotificationSummary,
+  PortfolioSummary,
+  PortfolioUploadTicket,
+  ProfileSummary,
+  PublicProfile,
+  ScoutCandidate,
+  ScoutRequestSummary,
+  SessionUser,
+} from "./core"
 export type {
   DiscoveryPortfolio,
   DiscoveryPortfolioDetail,
@@ -100,9 +116,15 @@ const errorSchema = t.Object({
 
 export type CreateAppOptions = {
   aot?: boolean
+  assets?: R2Bucket
+  chatRooms?: DurableObjectNamespace
+  cookieDomain?: string
+  core?: CoreService
   corsOrigins?: string
   discovery?: DiscoveryRepository
+  google?: CoreRouteOptions["google"]
   readiness?: () => Promise<ReadinessResult>
+  webOrigin?: string
 }
 
 export function parseCorsOrigins(origins = "") {
@@ -117,6 +139,12 @@ export function createApp(options: CreateAppOptions = {}) {
   const readiness = options.readiness ?? (async () => defaultReadiness)
 
   return new Elysia({ adapter: CloudflareAdapter, aot: options.aot ?? true })
+    .onError(({ error, set }) => {
+      if (error instanceof ApiError) {
+        set.status = error.status
+        return { code: error.code, message: error.message }
+      }
+    })
     .use(
       openapi({
         path: "/docs",
@@ -130,13 +158,33 @@ export function createApp(options: CreateAppOptions = {}) {
           tags: [
             { name: "System", description: "서비스 상태 확인" },
             { name: "Discovery", description: "공개 프로젝트 탐색" },
+            { name: "Auth", description: "로그인과 세션" },
+            { name: "Profile", description: "프로필" },
+            { name: "Portfolio", description: "프로젝트 등록과 관리" },
+            { name: "Assets", description: "권한 확인 에셋" },
+            { name: "Scout", description: "스카우트 탐색과 제안" },
+            { name: "Chat", description: "승인 후 채팅" },
+            { name: "Notification", description: "인앱 알림" },
+            { name: "Trust", description: "매너, 차단과 신고" },
           ],
         },
       }),
     )
     .use(
       cors({
+        credentials: true,
         origin: parseCorsOrigins(options.corsOrigins),
+      }),
+    )
+    .use(
+      createCoreRoutes({
+        allowedOrigins: parseCorsOrigins(options.corsOrigins),
+        assets: options.assets,
+        chatRooms: options.chatRooms,
+        cookieDomain: options.cookieDomain,
+        core: options.core,
+        google: options.google,
+        webOrigin: options.webOrigin ?? "http://localhost:4321",
       }),
     )
     .get("/", () => ({ name: "scouty-api", status: "ok" }) as const, {
@@ -157,7 +205,7 @@ export function createApp(options: CreateAppOptions = {}) {
     })
     .get(
       "/v1/discovery/portfolios",
-      async ({ query, status }) => {
+      async ({ query, request, status }) => {
         const cursor = query.cursor ? decodeDiscoveryCursor(query.cursor) : undefined
 
         if (query.cursor && !cursor) {
@@ -167,8 +215,16 @@ export function createApp(options: CreateAppOptions = {}) {
           })
         }
 
+        const sessionToken = parseSessionToken(request.headers.get("cookie"))
+        const sessionUser =
+          sessionToken && options.core ? await options.core.resolveSession(sessionToken) : null
+        const excludeAuthorIds = sessionUser
+          ? await options.core?.listExcludedDiscoveryAuthors(sessionUser.id)
+          : undefined
+
         return discovery.listPortfolios({
           cursor: cursor ?? undefined,
+          excludeAuthorIds,
           limit: query.limit ?? 20,
           query: query.q,
           role: query.role,
