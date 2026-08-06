@@ -1,0 +1,16 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "scouty-web-domain",
+  "account_id": "d09b11497e0618d6dceff0559855a7b2",
+  "main": "src/domain-worker.ts",
+  "compatibility_date": "2026-08-06",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "greeney.life/*", "zone_name": "greeney.life" }],
+  "vars": {
+    "PAGES_ORIGIN": "scouty-web.pages.dev"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

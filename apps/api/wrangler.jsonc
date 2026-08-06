@@ -1,6 +1,7 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "scouty-api",
+  "account_id": "d09b11497e0618d6dceff0559855a7b2",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-06",
   "compatibility_flags": ["nodejs_compat"],
@@ -17,7 +18,7 @@
     {
       "binding": "EDGE_DB",
       "database_name": "scouty-edge",
-      "database_id": "4bc271ec-ff9c-423a-928d-c1a280c5fdfc",
+      "database_id": "4d7a3562-1399-452d-a87c-73fa4c165ca3",
       "migrations_dir": "d1/migrations"
     }
   ],

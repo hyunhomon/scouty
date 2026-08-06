@@ -7,6 +7,8 @@
     "build": "astro check && astro build",
     "preview": "wrangler pages dev dist --port 4321",
     "deploy": "astro build && wrangler pages deploy",
+    "deploy:domain": "wrangler deploy --config wrangler.domain.jsonc",
+    "build:domain": "wrangler deploy --dry-run --outdir dist-domain --config wrangler.domain.jsonc",
     "typecheck": "astro check",
     "test": "vitest run"
   },

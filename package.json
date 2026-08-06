@@ -24,6 +24,7 @@
     "db:studio": "bun run --filter '@scouty/db' studio",
     "cf:typegen": "bun run --filter '@scouty/api' cf:typegen",
     "deploy:web": "bun run --filter '@scouty/web' deploy",
+    "deploy:web-domain": "bun run --filter '@scouty/web' deploy:domain",
     "deploy:api": "bun run --filter '@scouty/api' deploy"
   },
   "devDependencies": {
