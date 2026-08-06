@@ -23,9 +23,8 @@
     "db:seed": "bun run --filter '@scouty/db' seed",
     "db:studio": "bun run --filter '@scouty/db' studio",
     "cf:typegen": "bun run --filter '@scouty/api' cf:typegen",
-    "cf:build:api": "bun run db:generate && bun run lint && bun run typecheck && bun run test && bun run build",
-    "cf:deploy:api": "bun run db:deploy && bunx wrangler d1 migrations apply scouty-edge --remote --config apps/api/wrangler.jsonc && bun run deploy:api",
-    "cf:build:web": "bun run --filter '@scouty/web' build",
+    "cf:build": "bun run db:generate && bun run lint && bun run typecheck && bun run test && bun run build",
+    "cf:deploy": "bun run db:deploy && bunx wrangler d1 migrations apply scouty-edge --remote --config apps/api/wrangler.jsonc && bun run deploy:api && bunx wrangler pages deploy apps/web/dist --project-name scouty-web --branch main",
     "deploy:web": "bun run --filter '@scouty/web' deploy",
     "deploy:api": "bun run --filter '@scouty/api' deploy"
   },
