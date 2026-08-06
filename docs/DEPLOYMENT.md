@@ -7,7 +7,7 @@ Scouty는 자동 CD를 운영하지 않는다. GitHub Actions는 CI만 수행하
 - Wrangler가 Hyunhomon Cloudflare account에 로그인되어 있어야 한다.
 - Workers Paid plan과 Containers가 활성화되어 있어야 한다.
 - API 배포 시 Container 이미지를 빌드할 Docker Desktop이 실행 중이어야 한다.
-- `scouty-edge` D1, `scouty-assets` R2, Queue, Durable Objects가 `apps/api/wrangler.jsonc`에 연결되어 있어야 한다.
+- `scouty-edge` D1, `scouty` R2, Queue, Durable Objects가 `apps/api/wrangler.jsonc`에 연결되어 있어야 한다.
 - Google OAuth redirect URI는 `https://api.greeney.life/v1/auth/google/callback`이어야 한다.
 
 ### Worker secrets
@@ -20,7 +20,7 @@ Scouty는 자동 CD를 운영하지 않는다. GitHub Actions는 CI만 수행하
 | `R2_ACCESS_KEY_ID` | R2 signed URL 발급 |
 | `R2_SECRET_ACCESS_KEY` | R2 signed URL 발급 |
 
-R2 key는 Workers 설정의 General API Routes에서 만들지 않는다. Cloudflare Dashboard의 **Storage & databases → R2 object storage → Overview → Account Details → API Tokens → Manage**에서 `scouty-assets` 범위의 Object Read & Write token을 만든다. 생성 결과의 Access Key ID와 Secret Access Key를 아래 명령에 각각 입력한다.
+R2 key는 Workers 설정의 General API Routes에서 만들지 않는다. Cloudflare Dashboard의 **Storage & databases → R2 object storage → Overview → Account Details → API Tokens → Manage**에서 `scouty` 범위의 Object Read & Write token을 만든다. 생성 결과의 Access Key ID와 Secret Access Key를 아래 명령에 각각 입력한다.
 
 ```powershell
 bunx wrangler secret put R2_ACCESS_KEY_ID --config apps/api/wrangler.jsonc
