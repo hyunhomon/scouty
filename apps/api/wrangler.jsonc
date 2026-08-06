@@ -4,24 +4,20 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-06",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
   "observability": {
     "enabled": true
   },
   "vars": {
-    "CORS_ORIGINS": "http://localhost:4321"
+    "CORS_ORIGINS": "https://greeney.life,http://localhost:4321"
   },
-  "hyperdrive": [
-    {
-      "binding": "HYPERDRIVE",
-      "id": "00000000-0000-0000-0000-000000000000",
-      "localConnectionString": "postgresql://scouty:scouty@localhost:5432/scouty"
-    }
-  ],
+  "routes": [{ "pattern": "api.greeney.life", "custom_domain": true }],
   "d1_databases": [
     {
       "binding": "EDGE_DB",
       "database_name": "scouty-edge",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "4bc271ec-ff9c-423a-928d-c1a280c5fdfc",
       "migrations_dir": "d1/migrations"
     }
   ],

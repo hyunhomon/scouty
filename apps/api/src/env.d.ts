@@ -3,7 +3,7 @@ declare namespace Cloudflare {
     ASSETS: R2Bucket
     CORS_ORIGINS: string
     EDGE_DB: D1Database
-    HYPERDRIVE: Hyperdrive
+    HYPERDRIVE?: Hyperdrive
   }
 }
 

@@ -7,7 +7,11 @@ export type ReadinessResult = {
   checks: Record<DependencyName, "ok" | "error">
 }
 
-async function checkPostgres(connectionString: string) {
+async function checkPostgres(connectionString?: string) {
+  if (!connectionString) {
+    throw new Error("HYPERDRIVE is not configured")
+  }
+
   const prisma = createPrismaClient(connectionString)
 
   try {
@@ -28,7 +32,7 @@ async function checkR2(bucket: R2Bucket) {
 export async function checkReadiness(bindings: Cloudflare.Env): Promise<ReadinessResult> {
   const names: DependencyName[] = ["postgres", "d1", "r2"]
   const results = await Promise.allSettled([
-    checkPostgres(bindings.HYPERDRIVE.connectionString),
+    checkPostgres(bindings.HYPERDRIVE?.connectionString),
     checkD1(bindings.EDGE_DB),
     checkR2(bindings.ASSETS),
   ])
