@@ -1,3 +1,4 @@
+import { applyD1Migrations, type D1Migration, env } from "cloudflare:test"
 import {
   AssetKind,
   AssetStatus,
@@ -7,39 +8,26 @@ import {
   ScoutRequestStatus,
   ScoutStatus,
 } from "@scouty/db"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { beforeAll, describe, expect, it } from "vitest"
 import { PrismaCoreService } from "../src/core-prisma"
 
-const connectionString = process.env.DATABASE_URL
-
-if (!connectionString) throw new Error("DATABASE_URL is required for integration tests")
-
-const databaseName = new URL(connectionString).pathname.slice(1)
-if (databaseName !== "scouty_test") {
-  throw new Error(`Integration tests refuse to reset non-test database: ${databaseName}`)
+declare module "cloudflare:test" {
+  interface ProvidedEnv extends Cloudflare.Env {
+    TEST_MIGRATIONS: D1Migration[]
+  }
 }
 
-const database = createPrismaClient(connectionString)
-const peerDatabase = createPrismaClient(connectionString)
+const testEnv = env as Cloudflare.Env & { TEST_MIGRATIONS: D1Migration[] }
 
-async function resetDatabase() {
-  await database.$executeRawUnsafe(
-    'TRUNCATE TABLE "users", "role_groups", "tags" RESTART IDENTITY CASCADE',
-  )
-}
+const database = createPrismaClient(env.DB)
+const peerDatabase = createPrismaClient(env.DB)
 
 function createService(databaseClient = database) {
-  const statement = {
-    bind: () => ({ run: async () => ({ success: true }) }),
-  }
   return new PrismaCoreService({
     apiOrigin: "https://api.greeney.life",
     assets: {} as R2Bucket,
     database: databaseClient,
-    edgeDatabase: {
-      batch: async () => [],
-      prepare: () => statement,
-    } as unknown as D1Database,
+    edgeDatabase: env.DB,
     processingQueue: {} as Queue<{ portfolioId: string; requestedAt: string }>,
     signer: {
       signGet: async () => "https://assets.example/file",
@@ -53,22 +41,15 @@ function expectRejectedWithCode(result: PromiseSettledResult<unknown>, code: str
   if (result.status === "rejected") expect(result.reason).toMatchObject({ code })
 }
 
-describe("PostgreSQL engagement lifecycle", () => {
-  beforeAll(resetDatabase)
-
-  afterAll(async () => {
-    await resetDatabase()
-    await database.$disconnect()
-    await peerDatabase.$disconnect()
+describe("D1 engagement lifecycle", () => {
+  beforeAll(async () => {
+    await applyD1Migrations(env.DB, testEnv.TEST_MIGRATIONS)
   })
 
   it("enforces proposal, chat, manner, block, report, and moderation invariants", async () => {
-    const group = await database.roleGroup.create({
-      data: { name: "개발", slug: "development", sortOrder: 1 },
-    })
-    const role = await database.role.create({
-      data: { groupId: group.id, name: "백엔드", slug: "backend", sortOrder: 1 },
-    })
+    const group = await database.roleGroup.findUniqueOrThrow({ where: { slug: "development" } })
+    const role = await database.role.findUniqueOrThrow({ where: { slug: "backend" } })
+    expect(role.groupId).toBe(group.id)
 
     async function createMember(subject: string, handle: string) {
       const user = await database.user.create({

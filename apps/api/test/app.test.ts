@@ -16,7 +16,6 @@ describe("API health", () => {
       readiness: async () => ({
         status: "degraded",
         checks: {
-          postgres: "ok",
           d1: "error",
           r2: "ok",
           oauth: "ok",

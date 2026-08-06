@@ -7,8 +7,6 @@
     "packages/*"
   ],
   "scripts": {
-    "infra:up": "docker compose up -d postgres",
-    "infra:down": "docker compose down",
     "dev": "bun run --parallel --filter './apps/*' dev",
     "dev:web": "bun run --filter '@scouty/web' dev",
     "dev:api": "bun run --filter '@scouty/api' dev",
@@ -20,10 +18,8 @@
     "test:integration": "bun run --filter '@scouty/api' test:integration",
     "test:e2e": "playwright test",
     "db:generate": "bun run --filter '@scouty/db' generate",
-    "db:migrate": "bun run --filter '@scouty/db' migrate",
-    "db:deploy": "bun run --filter '@scouty/db' deploy",
-    "db:seed": "bun run --filter '@scouty/db' seed",
-    "db:studio": "bun run --filter '@scouty/db' studio",
+    "db:migrate": "wrangler d1 migrations apply scouty-edge --local --config apps/api/wrangler.jsonc",
+    "db:deploy": "wrangler d1 migrations apply scouty-edge --remote --config apps/api/wrangler.jsonc",
     "cf:typegen": "bun run --filter '@scouty/api' cf:typegen",
     "deploy:web": "bun run --filter '@scouty/web' deploy",
     "deploy:api": "bun run --filter '@scouty/api' deploy"

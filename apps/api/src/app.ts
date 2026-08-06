@@ -38,7 +38,6 @@ export type {
 const defaultReadiness: ReadinessResult = {
   status: "degraded",
   checks: {
-    postgres: "error",
     d1: "error",
     r2: "error",
     oauth: "error",
@@ -50,7 +49,6 @@ const defaultReadiness: ReadinessResult = {
 const readinessSchema = t.Object({
   status: t.Union([t.Literal("ok"), t.Literal("degraded")]),
   checks: t.Object({
-    postgres: t.Union([t.Literal("ok"), t.Literal("error")]),
     d1: t.Union([t.Literal("ok"), t.Literal("error")]),
     r2: t.Union([t.Literal("ok"), t.Literal("error")]),
     oauth: t.Union([t.Literal("ok"), t.Literal("error")]),
@@ -299,7 +297,7 @@ export function createApp(options: CreateAppOptions = {}) {
         response: { 200: readinessSchema, 503: readinessSchema },
         detail: {
           summary: "Readiness 확인",
-          description: "PostgreSQL, D1, R2 바인딩의 준비 상태를 확인합니다.",
+          description: "D1, R2, OAuth, Queue 바인딩의 준비 상태를 확인합니다.",
           tags: ["System"],
         },
       },

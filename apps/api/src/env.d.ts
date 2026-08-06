@@ -5,10 +5,9 @@ declare namespace Cloudflare {
     CHAT_ROOMS: DurableObjectNamespace
     COOKIE_DOMAIN: string
     CORS_ORIGINS: string
-    EDGE_DB: D1Database
+    DB: D1Database
     GOOGLE_CLIENT_ID?: string
     GOOGLE_CLIENT_SECRET?: string
-    HYPERDRIVE?: Hyperdrive
     MEDIA_PROCESSOR: DurableObjectNamespace
     OAUTH_STATE_SECRET?: string
     PORTFOLIO_PROCESSING: Queue

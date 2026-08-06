@@ -111,7 +111,7 @@ export async function mockPublicApi(page: Page) {
     if (url.pathname === "/v1/me/bookmarks") return json(route, [], 401)
     if (url.pathname === "/ready") {
       return json(route, {
-        checks: { d1: "ok", oauth: "ok", postgres: "ok", queue: "ok", r2: "ok", r2Signing: "ok" },
+        checks: { d1: "ok", oauth: "ok", queue: "ok", r2: "ok", r2Signing: "ok" },
         status: "ok",
       })
     }

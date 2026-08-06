@@ -307,10 +307,10 @@ describe("PrismaCoreService account deletion", () => {
   it("removes discovery exposure before anonymizing the account and sessions", async () => {
     const invocation: string[] = []
     const run = vi.fn(async () => {
-      invocation.push("d1")
+      invocation.push("projection")
     })
     const userUpdate = vi.fn(async () => {
-      invocation.push("postgres")
+      invocation.push("canonical")
     })
     const operation = { updateMany: vi.fn(async () => ({ count: 1 })) }
     const transaction = {
@@ -351,7 +351,7 @@ describe("PrismaCoreService account deletion", () => {
 
     await service.deleteAccount("user-1")
 
-    expect(invocation).toEqual(["d1", "postgres"])
+    expect(invocation).toEqual(["projection", "canonical"])
     expect(transaction.session.deleteMany).toHaveBeenCalledWith({ where: { userId: "user-1" } })
     expect(userUpdate).toHaveBeenCalledWith({
       where: { id: "user-1" },

@@ -1,28 +1,12 @@
-import { createPrismaClient } from "@scouty/db"
-
-export type DependencyName = "postgres" | "d1" | "r2" | "oauth" | "r2Signing" | "queue"
+export type DependencyName = "d1" | "r2" | "oauth" | "r2Signing" | "queue"
 
 export type ReadinessResult = {
   status: "ok" | "degraded"
   checks: Record<DependencyName, "ok" | "error">
 }
 
-async function checkPostgres(connectionString?: string) {
-  if (!connectionString) {
-    throw new Error("HYPERDRIVE is not configured")
-  }
-
-  const prisma = createPrismaClient(connectionString)
-
-  try {
-    await prisma.$queryRaw`SELECT 1`
-  } finally {
-    await prisma.$disconnect()
-  }
-}
-
 async function checkD1(database: D1Database) {
-  await database.prepare("SELECT 1 AS ok").first()
+  await database.prepare("SELECT id FROM roles LIMIT 1").first()
 }
 
 async function checkR2(bucket: R2Bucket) {
@@ -34,10 +18,9 @@ async function checkConfiguration(name: string, ...values: unknown[]) {
 }
 
 export async function checkReadiness(bindings: Cloudflare.Env): Promise<ReadinessResult> {
-  const names: DependencyName[] = ["postgres", "d1", "r2", "oauth", "r2Signing", "queue"]
+  const names: DependencyName[] = ["d1", "r2", "oauth", "r2Signing", "queue"]
   const results = await Promise.allSettled([
-    checkPostgres(bindings.HYPERDRIVE?.connectionString),
-    checkD1(bindings.EDGE_DB),
+    checkD1(bindings.DB),
     checkR2(bindings.ASSETS),
     checkConfiguration(
       "OAuth",

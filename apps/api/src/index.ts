@@ -9,7 +9,7 @@ import { PortfolioMediaContainer } from "./media-container"
 import { checkReadiness } from "./readiness"
 import { R2UploadSigner } from "./security"
 
-const database = env.HYPERDRIVE ? createPrismaClient(env.HYPERDRIVE.connectionString) : null
+const database = createPrismaClient(env.DB)
 const analytics = (env as typeof env & { ANALYTICS: AnalyticsEngineDataset }).ANALYTICS
 
 const signer =
@@ -57,27 +57,25 @@ const processor = {
   },
 }
 
-const core = database
-  ? new PrismaCoreService({
-      apiOrigin: env.API_ORIGIN,
-      assets: env.ASSETS,
-      database,
-      edgeDatabase: env.EDGE_DB,
-      notifyChat: async (roomId, message) => {
-        const stub = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(roomId))
-        await stub.fetch("https://chat.internal/notify", {
-          method: "POST",
-          body: JSON.stringify(message),
-        })
-      },
-      processingQueue: env.PORTFOLIO_PROCESSING,
-      processor,
-      signer,
-      track: (event: ProductEvent) => {
-        analytics.writeDataPoint({ blobs: [event], doubles: [1] })
-      },
+const core = new PrismaCoreService({
+  apiOrigin: env.API_ORIGIN,
+  assets: env.ASSETS,
+  database,
+  edgeDatabase: env.DB,
+  notifyChat: async (roomId, message) => {
+    const stub = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(roomId))
+    await stub.fetch("https://chat.internal/notify", {
+      method: "POST",
+      body: JSON.stringify(message),
     })
-  : undefined
+  },
+  processingQueue: env.PORTFOLIO_PROCESSING,
+  processor,
+  signer,
+  track: (event: ProductEvent) => {
+    analytics.writeDataPoint({ blobs: [event], doubles: [1] })
+  },
+})
 
 const google =
   env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.OAUTH_STATE_SECRET
@@ -93,9 +91,9 @@ const app = createApp({
   assets: env.ASSETS,
   chatRooms: env.CHAT_ROOMS,
   cookieDomain: env.COOKIE_DOMAIN,
-  ...(core ? { core } : {}),
+  core,
   corsOrigins: env.CORS_ORIGINS,
-  discovery: new D1DiscoveryRepository(env.EDGE_DB),
+  discovery: new D1DiscoveryRepository(env.DB),
   ...(google ? { google } : {}),
   readiness: () => checkReadiness(env),
   webOrigin: env.WEB_ORIGIN,
@@ -109,10 +107,6 @@ export default {
   fetch: handler.fetch,
   async queue(batch: MessageBatch<{ portfolioId: string }>) {
     for (const message of batch.messages) {
-      if (!core) {
-        message.retry()
-        continue
-      }
       try {
         await core.processPortfolio(message.body.portfolioId)
         message.ack()
@@ -122,7 +116,7 @@ export default {
     }
   },
   async scheduled(controller: ScheduledController) {
-    if (controller.cron === "15 3 * * *") await core?.rebuildDiscoveryProjection()
-    else if (core) await Promise.all([core.recomputeScoutStats(), core.purgeDeletedAssets()])
+    if (controller.cron === "15 3 * * *") await core.rebuildDiscoveryProjection()
+    else await Promise.all([core.recomputeScoutStats(), core.purgeDeletedAssets()])
   },
 }

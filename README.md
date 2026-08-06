@@ -9,39 +9,35 @@
 - Bun workspaces
 - Astro + React + shadcn/ui on Cloudflare Pages
 - Elysia on Cloudflare Workers
-- Prisma + PostgreSQL through Hyperdrive
-- Cloudflare D1 for future edge read models
-- Cloudflare R2 for private assets
+- Prisma + Cloudflare D1
+- Cloudflare R2, Queues, Durable Objects, Containers
 
 ## 로컬 실행
 
-필수 도구는 Bun `1.3.14` 이상과 Docker다.
+Bun 1.3.14 이상이 필요하다. Docker는 API의 PDF 처리 Container를 빌드하거나 배포할 때만 필요하다.
 
-```bash
+```powershell
 bun install
-Copy-Item packages/db/.env.example packages/db/.env
-bun run infra:up
 bun run db:generate
-bun run db:deploy
-bun run db:seed
+bun run db:migrate
 bun run dev
 ```
 
 - Web: `http://localhost:4321`
 - API: `http://localhost:8787`
-- PostgreSQL: `localhost:5432`
-
-Windows가 아니라면 환경 파일 복사 명령을 `cp packages/db/.env.example packages/db/.env`로 바꾼다.
+- D1: Wrangler의 로컬 저장소 `apps/api/.wrangler/state`
 
 ## 검사
 
-```bash
+```powershell
 bun run lint
 bun run typecheck
 bun run test
+bun run test:integration
 bun run build
+bun run test:e2e
 ```
 
-## Cloudflare 배포 준비
+## 배포
 
-각 앱의 `wrangler.jsonc`에 있는 placeholder를 실제 Pages·Worker·D1·R2·Hyperdrive 리소스 값으로 교체한 뒤 배포한다. 원격 리소스 생성과 secret 등록은 자동으로 수행하지 않는다.
+production은 로컬 Wrangler로 수동 배포한다. D1 migration을 먼저 적용하고 API와 Web을 차례로 배포한다. 자세한 절차는 [프로덕션 배포 문서](./docs/DEPLOYMENT.md)를 따른다.

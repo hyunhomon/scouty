@@ -21,7 +21,7 @@
   "routes": [{ "pattern": "api.greeney.life", "custom_domain": true }],
   "d1_databases": [
     {
-      "binding": "EDGE_DB",
+      "binding": "DB",
       "database_name": "scouty-edge",
       "database_id": "4d7a3562-1399-452d-a87c-73fa4c165ca3",
       "migrations_dir": "d1/migrations"
