@@ -15,7 +15,14 @@ describe("API health", () => {
       aot: false,
       readiness: async () => ({
         status: "degraded",
-        checks: { postgres: "ok", d1: "error", r2: "ok" },
+        checks: {
+          postgres: "ok",
+          d1: "error",
+          r2: "ok",
+          oauth: "ok",
+          r2Signing: "ok",
+          queue: "ok",
+        },
       }),
     })
     const response = await app.handle(new Request("https://scouty.test/ready"))

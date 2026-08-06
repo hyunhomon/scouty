@@ -35,7 +35,14 @@ export type {
 
 const defaultReadiness: ReadinessResult = {
   status: "degraded",
-  checks: { postgres: "error", d1: "error", r2: "error" },
+  checks: {
+    postgres: "error",
+    d1: "error",
+    r2: "error",
+    oauth: "error",
+    r2Signing: "error",
+    queue: "error",
+  },
 }
 
 const readinessSchema = t.Object({
@@ -44,6 +51,9 @@ const readinessSchema = t.Object({
     postgres: t.Union([t.Literal("ok"), t.Literal("error")]),
     d1: t.Union([t.Literal("ok"), t.Literal("error")]),
     r2: t.Union([t.Literal("ok"), t.Literal("error")]),
+    oauth: t.Union([t.Literal("ok"), t.Literal("error")]),
+    r2Signing: t.Union([t.Literal("ok"), t.Literal("error")]),
+    queue: t.Union([t.Literal("ok"), t.Literal("error")]),
   }),
 })
 

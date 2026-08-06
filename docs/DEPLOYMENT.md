@@ -1,6 +1,6 @@
 # Scouty 프로덕션 배포
 
-Scouty는 `main` CI가 성공한 뒤 GitHub Actions의 `Deploy production` workflow로 배포한다. 장애 복구나 최초 배포에서는 같은 workflow를 수동 실행할 수 있다. 자동·수동 배포 모두 production만 대상으로 한다.
+PR에서는 `CI` workflow만 실행한다. `main`에 반영되면 별도의 `CD` workflow가 같은 커밋을 다시 검증하고, `check` job이 성공한 경우에만 `deploy` job으로 이어서 배포한다. 장애 복구나 최초 배포에서는 `main`의 `CD` workflow를 수동 실행할 수 있다. 자동·수동 배포 모두 production만 대상으로 한다.
 
 ## GitHub production environment
 
@@ -8,9 +8,10 @@ Scouty는 `main` CI가 성공한 뒤 GitHub Actions의 `Deploy production` workf
 
 | 이름 | 용도 |
 |---|---|
-| `CLOUDFLARE_ACCOUNT_ID` | Hyunhomon Cloudflare account ID |
 | `CLOUDFLARE_API_TOKEN` | Workers, Pages, D1 배포 권한을 최소 범위로 가진 token |
 | `DATABASE_URL` | migration 전용 PostgreSQL 직접 연결 문자열 |
+
+Cloudflare account ID는 공개 식별자이므로 workflow와 Wrangler config에 Hyunhomon account ID를 고정한다.
 
 Worker runtime secret은 Wrangler로 관리한다.
 
@@ -37,6 +38,7 @@ CI 성공
 → API Worker
 → Astro build
 → Cloudflare Pages
+→ API readiness·Swagger·웹 smoke test
 ```
 
 스키마가 구버전 API와 호환되도록 expand migration을 먼저 적용한다. 자동 배포에서는 `db:seed`를
@@ -58,7 +60,7 @@ CI 성공
 6. 비공개 `scouty-assets` R2 bucket과 S3 API token을 준비한다.
 7. Google OAuth redirect URI에 `https://api.greeney.life/v1/auth/google/callback`을 등록한다.
 8. Worker runtime secret과 GitHub production secret을 등록한다.
-9. GitHub의 `Deploy production` workflow를 수동 실행하고 `/ready`가 `200`인지 확인한다.
+9. GitHub의 `CD` workflow를 `main`에서 수동 실행하고 `check`와 `deploy`가 모두 성공하는지 확인한다.
 
 Hyperdrive ID는 외부 PostgreSQL 인스턴스가 정해져야 생성할 수 있으므로 placeholder를 커밋하지 않는다. 이 binding이 없으면 Worker는 공개 D1 탐색만 제공하고 PostgreSQL 기반 기능 및 `/ready`는 준비되지 않은 상태로 응답한다.
 

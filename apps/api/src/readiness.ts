@@ -1,6 +1,6 @@
 import { createPrismaClient } from "@scouty/db"
 
-export type DependencyName = "postgres" | "d1" | "r2"
+export type DependencyName = "postgres" | "d1" | "r2" | "oauth" | "r2Signing" | "queue"
 
 export type ReadinessResult = {
   status: "ok" | "degraded"
@@ -29,12 +29,24 @@ async function checkR2(bucket: R2Bucket) {
   await bucket.head("__scouty_readiness__")
 }
 
+async function checkConfiguration(name: string, ...values: unknown[]) {
+  if (values.some((value) => !value)) throw new Error(`${name} is not configured`)
+}
+
 export async function checkReadiness(bindings: Cloudflare.Env): Promise<ReadinessResult> {
-  const names: DependencyName[] = ["postgres", "d1", "r2"]
+  const names: DependencyName[] = ["postgres", "d1", "r2", "oauth", "r2Signing", "queue"]
   const results = await Promise.allSettled([
     checkPostgres(bindings.HYPERDRIVE?.connectionString),
     checkD1(bindings.EDGE_DB),
     checkR2(bindings.ASSETS),
+    checkConfiguration(
+      "OAuth",
+      bindings.GOOGLE_CLIENT_ID,
+      bindings.GOOGLE_CLIENT_SECRET,
+      bindings.OAUTH_STATE_SECRET,
+    ),
+    checkConfiguration("R2 signing", bindings.R2_ACCESS_KEY_ID, bindings.R2_SECRET_ACCESS_KEY),
+    checkConfiguration("Portfolio processing queue", bindings.PORTFOLIO_PROCESSING),
   ])
 
   const checks = Object.fromEntries(
