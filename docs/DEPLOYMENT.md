@@ -25,6 +25,7 @@ Scouty는 자동 CD를 운영하지 않는다. GitHub Actions는 PR의 `CI` 검�
 저장소 루트에서 다음 순서로 실행한다.
 
 ```powershell
+$env:CLOUDFLARE_ACCOUNT_ID = "d09b11497e0618d6dceff0559855a7b2"
 bun run db:generate
 bun run lint
 bun run typecheck
