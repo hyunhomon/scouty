@@ -11,6 +11,7 @@ const databaseValues = vi.hoisted(() => ({
   PortfolioStatus: {
     ARCHIVED: "ARCHIVED",
     PROCESSING: "PROCESSING",
+    PUBLISHED: "PUBLISHED",
     READY: "READY",
   },
   ScoutRequestStatus: {
@@ -99,6 +100,44 @@ describe("PrismaCoreService profile completion", () => {
       }),
     })
     expect(profile.avatarUrl).toBeNull()
+  })
+
+  it("uses a normalized exact handle lookup supported by D1", async () => {
+    const findFirst = vi.fn(async () => ({
+      avatarAssetId: null,
+      bio: "좋은 아이디어를 빠르게 제품으로 만드는 사람입니다.",
+      communicationPreference: "편하게 메시지 주세요.",
+      handle: "hyunhomon",
+      nickname: "hyunhomon",
+      scoutStatus: "SELECTIVE",
+      user: {
+        portfolios: [],
+        roles: [{ priority: 1, role: { name: "PM", slug: "pm" } }],
+        scoutStats: null,
+      },
+      userId: "user-1",
+    }))
+    const database = { userProfile: { findFirst } }
+    const service = new PrismaCoreService({
+      apiOrigin: "https://api.greeney.life",
+      assets: {} as R2Bucket,
+      database: database as never,
+      edgeDatabase: {} as D1Database,
+      processingQueue: {} as Queue<{ portfolioId: string; requestedAt: string }>,
+      signer: {
+        signGet: vi.fn(async () => "https://assets.example/file"),
+        signPut: vi.fn(async () => ({ headers: {}, url: "https://assets.example/file" })),
+      },
+    })
+
+    const profile = await service.getPublicProfile("HyunHoMon")
+
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ handle: { equals: "hyunhomon" } }),
+      }),
+    )
+    expect(profile?.handle).toBe("hyunhomon")
   })
 })
 
