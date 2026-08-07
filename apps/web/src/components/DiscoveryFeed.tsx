@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { trackProductEvent } from "@/lib/analytics"
-import { api, apiUrl } from "@/lib/api"
+import { apiUrl } from "@/lib/api"
+import { ApiRequestError, request } from "@/lib/api-client"
 import { cn } from "@/lib/utils"
 
 export type DiscoveryFeedClient = {
@@ -19,21 +20,14 @@ export type DiscoveryFeedClient = {
 
 const defaultClient: DiscoveryFeedClient = {
   async listRoles() {
-    const { data, error } = await api.v1.discovery.roles.get()
-    if (error) throw new Error("역할 목록을 불러오지 못했습니다.")
-    return data
+    return request<DiscoveryRole[]>("/v1/discovery/roles")
   },
   async listPortfolios(input) {
-    const { data, error } = await api.v1.discovery.portfolios.get({
-      query: {
-        cursor: input.cursor,
-        limit: 20,
-        q: input.query,
-        role: input.role,
-      },
-    })
-    if (error) throw new Error("프로젝트를 불러오지 못했습니다.")
-    return data
+    const query = new URLSearchParams({ limit: "20" })
+    if (input.cursor) query.set("cursor", input.cursor)
+    if (input.query) query.set("q", input.query)
+    if (input.role) query.set("role", input.role)
+    return request<DiscoveryPortfolioPage>(`/v1/discovery/portfolios?${query}`)
   },
 }
 
@@ -174,10 +168,8 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
   }, [client])
 
   useEffect(() => {
-    fetch(`${apiUrl}/v1/me/bookmarks`, { credentials: "include" })
-      .then(async (response) => {
-        if (!response.ok) return
-        const saved = (await response.json()) as Array<{ id: string }>
+    request<Array<{ id: string }>>("/v1/me/bookmarks")
+      .then((saved) => {
         setBookmarks(new Set(saved.map((portfolio) => portfolio.id)))
       })
       .catch(() => undefined)
@@ -251,23 +243,23 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
 
   async function toggleBookmark(portfolioId: string) {
     const isBookmarked = bookmarks.has(portfolioId)
-    const response = await fetch(`${apiUrl}/v1/me/bookmarks/${encodeURIComponent(portfolioId)}`, {
-      credentials: "include",
-      method: isBookmarked ? "DELETE" : "PUT",
-    })
-    if (response.status === 401) {
-      window.location.assign(
-        `${apiUrl}/v1/auth/google/start?returnTo=${encodeURIComponent(window.location.pathname)}`,
-      )
-      return
+    try {
+      await request(`/v1/me/bookmarks/${encodeURIComponent(portfolioId)}`, {
+        method: isBookmarked ? "DELETE" : "PUT",
+      })
+      setBookmarks((current) => {
+        const next = new Set(current)
+        if (isBookmarked) next.delete(portfolioId)
+        else next.add(portfolioId)
+        return next
+      })
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 401) {
+        window.location.assign(
+          `${apiUrl}/v1/auth/google/start?returnTo=${encodeURIComponent(window.location.pathname)}`,
+        )
+      }
     }
-    if (!response.ok) return
-    setBookmarks((current) => {
-      const next = new Set(current)
-      if (isBookmarked) next.delete(portfolioId)
-      else next.add(portfolioId)
-      return next
-    })
   }
 
   return (

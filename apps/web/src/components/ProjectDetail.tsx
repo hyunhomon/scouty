@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { trackProductEvent } from "@/lib/analytics"
-import { api, apiUrl } from "@/lib/api"
+import { apiUrl } from "@/lib/api"
+import { ApiRequestError, request } from "@/lib/api-client"
 
 export type ProjectDetailClient = {
   getPortfolio(portfolioId: string): Promise<DiscoveryPortfolioDetail | null>
@@ -14,16 +15,17 @@ export type ProjectDetailClient = {
 
 const defaultClient: ProjectDetailClient = {
   async getPortfolio(portfolioId) {
-    const { data, error } = await api.v1.discovery.portfolios({ portfolioId }).get()
-
-    if (error?.status === 404) return null
-    if (error) throw new Error("프로젝트를 불러오지 못했습니다.")
-    return data
+    try {
+      return await request<DiscoveryPortfolioDetail>(
+        `/v1/discovery/portfolios/${encodeURIComponent(portfolioId)}`,
+      )
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 404) return null
+      throw error
+    }
   },
   async listRoles() {
-    const { data, error } = await api.v1.discovery.roles.get()
-    if (error) return []
-    return data
+    return request<DiscoveryRole[]>("/v1/discovery/roles").catch(() => [])
   },
 }
 
@@ -71,10 +73,8 @@ function BookmarkButton({ portfolioId }: { portfolioId: string }) {
   const [isSaving, setIsSaving] = useState(false)
 
   useEffect(() => {
-    fetch(`${apiUrl}/v1/me/bookmarks`, { credentials: "include" })
-      .then(async (response) => {
-        if (!response.ok) return
-        const data = (await response.json()) as Array<{ id: string }>
+    request<Array<{ id: string }>>("/v1/me/bookmarks")
+      .then((data) => {
         setIsBookmarked(data.some((portfolio) => portfolio.id === portfolioId))
       })
       .catch(() => undefined)
@@ -82,18 +82,20 @@ function BookmarkButton({ portfolioId }: { portfolioId: string }) {
 
   async function toggle() {
     setIsSaving(true)
-    const response = await fetch(`${apiUrl}/v1/me/bookmarks/${encodeURIComponent(portfolioId)}`, {
-      credentials: "include",
-      method: isBookmarked ? "DELETE" : "PUT",
-    })
-    setIsSaving(false)
-    if (response.status === 401) {
-      window.location.assign(
-        `${apiUrl}/v1/auth/google/start?returnTo=${encodeURIComponent(window.location.pathname)}`,
-      )
-      return
+    try {
+      await request(`/v1/me/bookmarks/${encodeURIComponent(portfolioId)}`, {
+        method: isBookmarked ? "DELETE" : "PUT",
+      })
+      setIsBookmarked((current) => !current)
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 401) {
+        window.location.assign(
+          `${apiUrl}/v1/auth/google/start?returnTo=${encodeURIComponent(window.location.pathname)}`,
+        )
+      }
+    } finally {
+      setIsSaving(false)
     }
-    if (response.ok) setIsBookmarked((current) => !current)
   }
 
   return (

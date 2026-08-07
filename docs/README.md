@@ -15,6 +15,8 @@ Scouty의 제품·디자인·기술 결정을 한곳에서 찾기 위한 문서 
 | [개발 기준](./DEVELOPMENT_GUIDE.md) | 구현과 검토를 어떤 방식으로 진행하는가? | Engineering, QA |
 | [프로덕션 배포](./DEPLOYMENT.md) | 무엇을 준비하고 어떤 순서로 배포·복구하는가? | Engineering, Operations |
 
+구조 변경의 결정 근거는 [`docs/adr`](./adr/)에 기록한다.
+
 ## 결정 우선순위
 
 문서 사이에 충돌이 있으면 다음 순서로 판단한다.
