@@ -18,7 +18,8 @@ export function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreat
 
   async function submit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault()
-    const form = new FormData(event.currentTarget)
+    const formElement = event.currentTarget
+    const form = new FormData(formElement)
     const pdf = form.get("pdf")
     const video = form.get("video")
     if (!(pdf instanceof File) || pdf.size === 0) return
@@ -56,7 +57,8 @@ export function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreat
         await uploadFile(upload.url, file, upload.headers, upload.kind === "pdf" ? "PDF" : "영상")
       }
       await request(`/v1/me/portfolios/${ticket.portfolioId}/uploads/complete`, { method: "POST" })
-      event.currentTarget.reset()
+      portfolioId = undefined
+      formElement.reset()
       setSelectedRoles([])
       onCreated()
     } catch (caught) {
