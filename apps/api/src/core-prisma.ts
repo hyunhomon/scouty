@@ -476,10 +476,9 @@ export class PrismaCoreService implements CoreService {
         const currentProfile = await transaction.userProfile.findUnique({ where: { userId } })
         completedForFirstTime = !currentProfile?.profileCompletedAt
         const avatarAssetId =
-          input.avatarAssetId === undefined ? currentProfile?.avatarAssetId : input.avatarAssetId
-        if (!avatarAssetId) {
-          throw new ApiError(400, "AVATAR_REQUIRED", "프로필 이미지를 등록해주세요.")
-        }
+          (input.avatarAssetId === undefined
+            ? currentProfile?.avatarAssetId
+            : input.avatarAssetId) ?? null
         const roles = await transaction.role.findMany({
           where: { isActive: true, slug: { in: roleSlugs } },
         })

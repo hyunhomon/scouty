@@ -27,6 +27,81 @@ vi.mock("@scouty/db", () => ({
   Prisma: { PrismaClientKnownRequestError: class PrismaClientKnownRequestError extends Error {} },
 }))
 
+describe("PrismaCoreService profile completion", () => {
+  it("completes onboarding without an optional avatar", async () => {
+    const profileUpsert = vi.fn(async () => undefined)
+    const assetFindFirst = vi.fn()
+    const transaction = {
+      asset: { findFirst: assetFindFirst },
+      role: {
+        findMany: vi.fn(async () => [{ id: "role-1", name: "PM", slug: "pm" }]),
+      },
+      userProfile: {
+        findUnique: vi.fn(async () => ({ avatarAssetId: null, profileCompletedAt: null })),
+        upsert: profileUpsert,
+      },
+      userRole: {
+        createMany: vi.fn(async () => undefined),
+        deleteMany: vi.fn(async () => undefined),
+      },
+    }
+    const database = {
+      $transaction: vi.fn(async (operation: (client: typeof transaction) => Promise<void>) =>
+        operation(transaction),
+      ),
+      portfolio: { findMany: vi.fn(async () => []) },
+      userProfile: {
+        findUnique: vi.fn(async () => ({
+          avatarAssetId: null,
+          bio: "좋은 아이디어를 빠르게 제품으로 만드는 사람입니다.",
+          communicationPreference: null,
+          handle: "hyunhomon",
+          nickname: "hyunhomon",
+          scoutStatus: "SELECTIVE",
+          user: {
+            roles: [{ priority: 1, role: { name: "PM", slug: "pm" } }],
+            scoutStats: null,
+          },
+          userId: "user-1",
+        })),
+      },
+    }
+    const service = new PrismaCoreService({
+      apiOrigin: "https://api.greeney.life",
+      assets: {} as R2Bucket,
+      database: database as never,
+      edgeDatabase: {} as D1Database,
+      processingQueue: {} as Queue<{ portfolioId: string; requestedAt: string }>,
+      signer: {
+        signGet: vi.fn(async () => "https://assets.example/file"),
+        signPut: vi.fn(async () => ({ headers: {}, url: "https://assets.example/file" })),
+      },
+    })
+
+    const profile = await service.updateProfile("user-1", {
+      bio: "좋은 아이디어를 빠르게 제품으로 만드는 사람입니다.",
+      handle: "hyunhomon",
+      nickname: "hyunhomon",
+      roleSlugs: ["pm"],
+      scoutStatus: "selective",
+    })
+
+    expect(assetFindFirst).not.toHaveBeenCalled()
+    expect(profileUpsert).toHaveBeenCalledWith({
+      where: { userId: "user-1" },
+      update: expect.objectContaining({
+        avatarAssetId: null,
+        profileCompletedAt: expect.any(Date),
+      }),
+      create: expect.objectContaining({
+        avatarAssetId: null,
+        profileCompletedAt: expect.any(Date),
+      }),
+    })
+    expect(profile.avatarUrl).toBeNull()
+  })
+})
+
 describe("PrismaCoreService portfolio lifecycle", () => {
   it("keeps processed portfolios private until the owner publishes them", async () => {
     const portfolioUpdate = vi.fn(async () => undefined)
