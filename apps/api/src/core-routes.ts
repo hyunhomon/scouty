@@ -83,6 +83,26 @@ const videoUploadInput = t.Object({
   ]),
 })
 
+const multipartUploadQuery = t.Object({
+  uploadId: t.String({ maxLength: 512, minLength: 1 }),
+})
+
+const multipartPartQuery = t.Object({
+  partNumber: t.Numeric({ maximum: 10_000, minimum: 1 }),
+  uploadId: t.String({ maxLength: 512, minLength: 1 }),
+})
+
+const multipartCompleteInput = t.Object({
+  parts: t.Array(
+    t.Object({
+      etag: t.String({ maxLength: 256, minLength: 1 }),
+      partNumber: t.Number({ maximum: 10_000, minimum: 1 }),
+    }),
+    { maxItems: 10_000, minItems: 1 },
+  ),
+  uploadId: t.String({ maxLength: 512, minLength: 1 }),
+})
+
 function getCore(options: CoreRouteOptions) {
   if (!options.core) {
     throw new ApiError(503, "DATABASE_UNAVAILABLE", "데이터베이스 연결을 준비하고 있어요.")
@@ -247,6 +267,84 @@ export function createCoreRoutes(options: CoreRouteOptions) {
         return getCore(options).createAvatarUpload(user.id, body)
       },
       { body: imageUploadInput, detail: { summary: "아바타 업로드 URL", tags: ["Profile"] } },
+    )
+    .put(
+      "/v1/me/uploads/:id",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).uploadAsset(
+          user.id,
+          params.id,
+          request.body,
+          request.headers.get("content-type"),
+        )
+        return new Response(null, { status: 204 })
+      },
+      {
+        params: idParams,
+        detail: { summary: "인증된 R2 파일 업로드", tags: ["Assets"] },
+      },
+    )
+    .post(
+      "/v1/me/uploads/:id/multipart",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        return getCore(options).createMultipartAssetUpload(user.id, params.id)
+      },
+      {
+        params: idParams,
+        detail: { summary: "대용량 R2 업로드 시작", tags: ["Assets"] },
+      },
+    )
+    .put(
+      "/v1/me/uploads/:id/multipart",
+      async ({ params, query, request }) => {
+        const user = await requireUser(request, options)
+        return getCore(options).uploadAssetPart(
+          user.id,
+          params.id,
+          query.uploadId,
+          query.partNumber,
+          request.body,
+          request.headers.get("content-type"),
+        )
+      },
+      {
+        params: idParams,
+        query: multipartPartQuery,
+        detail: { summary: "대용량 R2 파일 조각 업로드", tags: ["Assets"] },
+      },
+    )
+    .post(
+      "/v1/me/uploads/:id/multipart/complete",
+      async ({ body, params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).completeMultipartAssetUpload(
+          user.id,
+          params.id,
+          body.uploadId,
+          body.parts,
+        )
+        return new Response(null, { status: 204 })
+      },
+      {
+        body: multipartCompleteInput,
+        params: idParams,
+        detail: { summary: "대용량 R2 업로드 완료", tags: ["Assets"] },
+      },
+    )
+    .delete(
+      "/v1/me/uploads/:id/multipart",
+      async ({ params, query, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).abortMultipartAssetUpload(user.id, params.id, query.uploadId)
+        return new Response(null, { status: 204 })
+      },
+      {
+        params: idParams,
+        query: multipartUploadQuery,
+        detail: { summary: "대용량 R2 업로드 취소", tags: ["Assets"] },
+      },
     )
     .post(
       "/v1/me/avatar/uploads/:id/complete",

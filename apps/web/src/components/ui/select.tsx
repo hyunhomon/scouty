@@ -36,17 +36,20 @@ export function SelectContent({
   className,
   children,
   position = "popper",
+  style,
   ...props
 }: ComponentProps<typeof SelectPrimitive.Content>) {
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
+        data-slot="select-content"
         className={cn(
-          "relative z-[9999] max-h-80 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-lg",
+          "relative z-[2147483647] max-h-80 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-lg",
           position === "popper" && "translate-y-1",
           className,
         )}
         position={position}
+        style={{ ...style, zIndex: 2147483647 }}
         {...props}
       >
         <SelectPrimitive.ScrollUpButton className="flex h-7 items-center justify-center">
