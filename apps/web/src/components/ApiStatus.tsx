@@ -1,6 +1,6 @@
 import { CircleCheck, CircleDashed, CircleX } from "lucide-react"
 import { useEffect, useState } from "react"
-import { api } from "@/lib/api"
+import { request } from "@/lib/api-client"
 
 type Status = "checking" | "online" | "offline"
 
@@ -9,8 +9,8 @@ type ApiStatusProps = {
 }
 
 async function checkApi() {
-  const { data, error } = await api.health.get()
-  return !error && data?.status === "ok"
+  const data = await request<{ status: string }>("/health")
+  return data.status === "ok"
 }
 
 export function ApiStatus({ check = checkApi }: ApiStatusProps) {
