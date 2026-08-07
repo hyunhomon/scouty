@@ -48,12 +48,25 @@ async function request<T>(path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json")
   const response = await fetch(`${apiUrl}${path}`, { ...init, credentials: "include", headers })
+  const responseText = response.status === 204 ? "" : await response.text()
+  let responseBody: unknown = null
+
+  if (responseText) {
+    try {
+      responseBody = JSON.parse(responseText)
+    } catch {
+      if (response.ok) {
+        throw new RequestError(502, "서버 응답을 확인하지 못했어요. 잠시 후 다시 시도해주세요.")
+      }
+    }
+  }
+
   if (!response.ok) {
-    const error = (await response.json().catch(() => null)) as { message?: string } | null
+    const error = responseBody as { message?: string } | null
     throw new RequestError(response.status, error?.message ?? "요청을 처리하지 못했어요.")
   }
   if (response.status === 204) return undefined as T
-  return (await response.json()) as T
+  return responseBody as T
 }
 
 function LoadingPanel({ label = "불러오는 중" }: { label?: string }) {
@@ -288,13 +301,8 @@ function OnboardingView({
       </h1>
       <p className="mt-3 text-muted-foreground">필수 정보만 받고, 학교나 경력은 묻지 않아요.</p>
       <form className="mt-8 grid gap-5" onSubmit={submit}>
-        <Field label="프로필 이미지">
-          <input
-            name="avatar"
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            required={!initialProfile?.avatarUrl}
-          />
+        <Field label="프로필 이미지 (선택)">
+          <input name="avatar" type="file" accept="image/jpeg,image/png,image/webp" />
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="닉네임">

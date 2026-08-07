@@ -66,6 +66,15 @@ describe("OpenAPI reference", () => {
 })
 
 describe("API security boundary", () => {
+  it("serializes an anonymous session as JSON null", async () => {
+    const app = createApp({ aot: false })
+    const response = await app.handle(new Request("https://scouty.test/v1/auth/session"))
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toContain("application/json")
+    await expect(response.json()).resolves.toBeNull()
+  })
+
   it("rejects protected routes without a session", async () => {
     const app = createApp({ aot: false })
     const response = await app.handle(new Request("https://scouty.test/v1/me"))

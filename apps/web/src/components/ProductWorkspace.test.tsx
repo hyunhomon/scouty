@@ -13,7 +13,7 @@ describe("ProductWorkspace", () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const path = new URL(String(input)).pathname
         if (path === "/v1/auth/session") {
-          return Response.json(null)
+          return new Response(null, { status: 200 })
         }
         if (path === "/v1/discovery/roles") {
           return Response.json([])
