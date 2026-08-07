@@ -124,7 +124,7 @@ async function processPdf(input: ProcessRequest) {
 
     await run([
       "pdftoppm",
-      "-webp",
+      "-png",
       "-r",
       "144",
       "-scale-to-x",
@@ -136,17 +136,30 @@ async function processPdf(input: ProcessRequest) {
     ])
 
     const imageFiles = (await readdir(workDirectory))
-      .filter((name) => /^page-\d+\.webp$/.test(name))
+      .filter((name) => /^page-\d+\.png$/.test(name))
       .sort((left, right) => Number(left.match(/\d+/)?.[0]) - Number(right.match(/\d+/)?.[0]))
     if (imageFiles.length !== pageCount) throw new Error("Rendered page count mismatch")
 
     const pages = []
     for (const [index, imageFile] of imageFiles.entries()) {
       const pageNumber = index + 1
-      const imagePath = `${workDirectory}/${imageFile}`
+      const sourceImagePath = `${workDirectory}/${imageFile}`
+      const imagePath = `${workDirectory}/rendered-${pageNumber}.webp`
       const thumbnailPath = `${workDirectory}/thumbnail-${pageNumber}.webp`
-      await run(["cwebp", "-quiet", "-resize", "800", "0", imagePath, "-o", thumbnailPath])
-      const dimensions = await run(["identify", "-format", "%w %h", imagePath])
+      await run(["cwebp", "-quiet", "-q", "85", sourceImagePath, "-o", imagePath])
+      await run([
+        "cwebp",
+        "-quiet",
+        "-q",
+        "80",
+        "-resize",
+        "800",
+        "0",
+        sourceImagePath,
+        "-o",
+        thumbnailPath,
+      ])
+      const dimensions = await run(["identify", "-format", "%w %h", sourceImagePath])
       const [width, height] = dimensions.trim().split(/\s+/).map(Number)
       if (!width || !height) throw new Error("Unable to read rendered dimensions")
 
