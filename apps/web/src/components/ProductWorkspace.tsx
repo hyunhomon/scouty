@@ -1836,6 +1836,7 @@ export function PublicProfileRoute() {
     new URLSearchParams(window.location.search).get("handle") ??
     undefined
   const [profile, setProfile] = useState<PublicProfile | null | undefined>()
+  const [viewerUserId, setViewerUserId] = useState<string | null>()
   const [error, setError] = useState<string>()
 
   useEffect(() => {
@@ -1843,9 +1844,13 @@ export function PublicProfileRoute() {
       setProfile(null)
       return
     }
-    request<PublicProfile | null>(`/v1/profiles/${encodeURIComponent(handle)}`)
-      .then((nextProfile) => {
+    Promise.all([
+      request<PublicProfile | null>(`/v1/profiles/${encodeURIComponent(handle)}`),
+      request<SessionUser | null>("/v1/auth/session").catch(() => null),
+    ])
+      .then(([nextProfile, session]) => {
         setProfile(nextProfile)
+        setViewerUserId(session?.id ?? null)
         if (nextProfile) trackProductEvent("profile_viewed")
       })
       .catch((caught) =>
@@ -1884,7 +1889,9 @@ export function PublicProfileRoute() {
           편한 소통 방식 · {profile.communicationPreference}
         </p>
       ) : null}
-      <TrustActions userId={profile.userId} />
+      {viewerUserId && viewerUserId !== profile.userId ? (
+        <TrustActions userId={profile.userId} />
+      ) : null}
       <h2 className="mt-10 text-2xl font-extrabold">게시한 프로젝트</h2>
       <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {profile.portfolios.map((portfolio) => (
