@@ -653,6 +653,39 @@ export class PrismaCoreService implements CoreService {
     return { expiresAt: expiresAt.toISOString(), portfolioId, uploads }
   }
 
+  async cancelPortfolioUpload(userId: string, portfolioId: string) {
+    const portfolio = await this.dependencies.database.portfolio.findFirst({
+      where: { authorId: userId, id: portfolioId, status: PortfolioStatus.DRAFT },
+      select: {
+        pdfAssetId: true,
+        tags: { select: { tagId: true } },
+        videoAssetId: true,
+      },
+    })
+    if (!portfolio) {
+      throw new ApiError(404, "PORTFOLIO_UPLOAD_NOT_FOUND", "취소할 업로드를 찾을 수 없어요.")
+    }
+
+    const assetIds = [portfolio.pdfAssetId, portfolio.videoAssetId].filter(
+      (assetId): assetId is string => Boolean(assetId),
+    )
+    const tagIds = portfolio.tags.map((tag) => tag.tagId)
+    await this.dependencies.database.$transaction(async (transaction) => {
+      await transaction.portfolio.delete({ where: { id: portfolioId } })
+      await transaction.asset.updateMany({
+        where: { id: { in: assetIds } },
+        data: { status: AssetStatus.DELETED },
+      })
+      if (tagIds.length > 0) {
+        await transaction.tag.updateMany({
+          where: { id: { in: tagIds }, usageCount: { gt: 0 } },
+          data: { usageCount: { decrement: 1 } },
+        })
+      }
+    })
+    await this.purgeDeletedAssets().catch(() => undefined)
+  }
+
   async createPortfolioPdfReplacement(
     userId: string,
     portfolioId: string,

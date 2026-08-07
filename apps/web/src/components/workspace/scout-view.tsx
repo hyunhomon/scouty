@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { errorMessage, request } from "@/lib/api-client"
-import { ErrorPanel } from "./shell"
+import { ErrorPanel, LoadingPanel } from "./shell"
 import type { Role } from "./types"
 
 export function ScoutView({ roles }: { roles: Role[] }) {
@@ -23,40 +23,56 @@ export function ScoutView({ roles }: { roles: Role[] }) {
   const [index, setIndex] = useState(0)
   const [showProposal, setShowProposal] = useState(false)
   const [message, setMessage] = useState<string>()
+  const [loadError, setLoadError] = useState<string>()
+  const [status, setStatus] = useState<"error" | "loading" | "ready">("loading")
   const touchStartY = useRef<number | undefined>(undefined)
 
   useEffect(() => {
     if (!role && roles[0]) setRole(roles[0].slug)
   }, [role, roles])
 
-  useEffect(() => {
-    if (!role) return
+  const load = useCallback(async () => {
+    if (!role) {
+      setCandidates([])
+      setStatus("ready")
+      return
+    }
     setMessage(undefined)
-    Promise.all([
-      request<ScoutCandidate[]>(`/v1/scout/candidates?role=${encodeURIComponent(role)}`),
-      request<PortfolioSummary[]>("/v1/me/bookmarks"),
-    ])
-      .then(([items, saved]) => {
-        let seen = new Set<string>()
-        try {
-          seen = new Set(JSON.parse(sessionStorage.getItem("scouty-seen-portfolios") ?? "[]"))
-        } catch {
-          seen = new Set()
-        }
-        const ordered = [
-          ...items.filter((item) => !seen.has(item.id)),
-          ...items.filter((item) => seen.has(item.id)),
-        ]
-        setCandidates(ordered)
-        setBookmarks(new Set(saved.map((item) => item.id)))
-        const requestedPortfolio = new URLSearchParams(window.location.search).get("portfolio")
-        const requestedIndex = requestedPortfolio
-          ? ordered.findIndex((item) => item.id === requestedPortfolio)
-          : -1
-        setIndex(requestedIndex >= 0 ? requestedIndex : 0)
-      })
-      .catch((error) => setMessage(errorMessage(error, "프로젝트를 불러오지 못했어요.")))
+    setLoadError(undefined)
+    setStatus("loading")
+    try {
+      const [items, saved] = await Promise.all([
+        request<ScoutCandidate[]>(`/v1/scout/candidates?role=${encodeURIComponent(role)}`),
+        request<PortfolioSummary[]>("/v1/me/bookmarks"),
+      ])
+      let seen = new Set<string>()
+      try {
+        seen = new Set(JSON.parse(sessionStorage.getItem("scouty-seen-portfolios") ?? "[]"))
+      } catch {
+        seen = new Set()
+      }
+      const ordered = [
+        ...items.filter((item) => !seen.has(item.id)),
+        ...items.filter((item) => seen.has(item.id)),
+      ]
+      setCandidates(ordered)
+      setBookmarks(new Set(saved.map((item) => item.id)))
+      const requestedPortfolio = new URLSearchParams(window.location.search).get("portfolio")
+      const requestedIndex = requestedPortfolio
+        ? ordered.findIndex((item) => item.id === requestedPortfolio)
+        : -1
+      setIndex(requestedIndex >= 0 ? requestedIndex : 0)
+      setStatus("ready")
+    } catch (error) {
+      setCandidates([])
+      setLoadError(errorMessage(error, "프로젝트를 불러오지 못했어요."))
+      setStatus("error")
+    }
   }, [role])
+
+  useEffect(() => {
+    void load()
+  }, [load])
 
   const candidate = candidates[index]
 
@@ -135,64 +151,73 @@ export function ScoutView({ roles }: { roles: Role[] }) {
           </SelectContent>
         </Select>
       </div>
-      {candidate ? (
-        <Card
-          className="mt-6 overflow-hidden rounded-3xl shadow-none"
-          onTouchStart={(event) => {
-            touchStartY.current = event.touches[0]?.clientY
-          }}
-          onTouchEnd={(event) => {
-            const endY = event.changedTouches[0]?.clientY
-            if (
-              touchStartY.current !== undefined &&
-              endY !== undefined &&
-              Math.abs(endY - touchStartY.current) > 60
-            ) {
-              nextCandidate()
-            }
-            touchStartY.current = undefined
-          }}
-        >
-          <div className="aspect-[4/3] bg-muted">
-            {candidate.coverUrl ? (
-              <img
-                src={candidate.coverUrl}
-                alt={`${candidate.title} 커버`}
-                className="size-full object-contain"
-              />
-            ) : null}
-          </div>
-          <div className="p-6">
-            <p className="text-sm text-muted-foreground">
-              {candidate.author.nickname} · @{candidate.author.handle}
-            </p>
-            <h2 className="mt-2 text-2xl font-extrabold">{candidate.title}</h2>
-            <div className="mt-4 flex gap-2">
-              {candidate.roles.map((item) => (
-                <Badge key={item.slug}>{item.name}</Badge>
-              ))}
-            </div>
-            <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <Button variant="outline" onClick={nextCandidate}>
-                다음
-              </Button>
-              <Button variant="outline" onClick={toggleBookmark}>
-                <Bookmark
-                  aria-hidden="true"
-                  fill={bookmarks.has(candidate.id) ? "currentColor" : "none"}
+      <div className="mt-6">
+        {status === "loading" ? (
+          <LoadingPanel label="프로젝트를 불러오는 중" />
+        ) : status === "error" ? (
+          <ErrorPanel
+            message={loadError ?? "프로젝트를 불러오지 못했어요."}
+            retry={() => void load()}
+          />
+        ) : candidate ? (
+          <Card
+            className="overflow-hidden rounded-3xl shadow-none"
+            onTouchStart={(event) => {
+              touchStartY.current = event.touches[0]?.clientY
+            }}
+            onTouchEnd={(event) => {
+              const endY = event.changedTouches[0]?.clientY
+              if (
+                touchStartY.current !== undefined &&
+                endY !== undefined &&
+                Math.abs(endY - touchStartY.current) > 60
+              ) {
+                nextCandidate()
+              }
+              touchStartY.current = undefined
+            }}
+          >
+            <div className="aspect-[4/3] bg-muted">
+              {candidate.coverUrl ? (
+                <img
+                  src={candidate.coverUrl}
+                  alt={`${candidate.title} 커버`}
+                  className="size-full object-contain"
                 />
-                {bookmarks.has(candidate.id) ? "저장됨" : "저장"}
-              </Button>
-              <Button asChild variant="outline">
-                <a href={`/portfolio?portfolio=${encodeURIComponent(candidate.id)}`}>상세</a>
-              </Button>
-              <Button onClick={() => setShowProposal(true)}>제안</Button>
+              ) : null}
             </div>
-          </div>
-        </Card>
-      ) : (
-        <ErrorPanel message="조건에 맞는 프로젝트가 아직 없어요." />
-      )}
+            <div className="p-6">
+              <p className="text-sm text-muted-foreground">
+                {candidate.author.nickname} · @{candidate.author.handle}
+              </p>
+              <h2 className="mt-2 text-2xl font-extrabold">{candidate.title}</h2>
+              <div className="mt-4 flex gap-2">
+                {candidate.roles.map((item) => (
+                  <Badge key={item.slug}>{item.name}</Badge>
+                ))}
+              </div>
+              <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <Button variant="outline" onClick={nextCandidate}>
+                  다음
+                </Button>
+                <Button variant="outline" onClick={toggleBookmark}>
+                  <Bookmark
+                    aria-hidden="true"
+                    fill={bookmarks.has(candidate.id) ? "currentColor" : "none"}
+                  />
+                  {bookmarks.has(candidate.id) ? "저장됨" : "저장"}
+                </Button>
+                <Button asChild variant="outline">
+                  <a href={`/portfolio?portfolio=${encodeURIComponent(candidate.id)}`}>상세</a>
+                </Button>
+                <Button onClick={() => setShowProposal(true)}>제안</Button>
+              </div>
+            </div>
+          </Card>
+        ) : (
+          <ErrorPanel message="조건에 맞는 프로젝트가 아직 없어요." />
+        )}
+      </div>
       {showProposal && candidate ? (
         <Card className="mt-5 rounded-2xl p-5 shadow-none">
           <h2 className="font-extrabold">{candidate.author.nickname}님에게 제안</h2>
@@ -287,16 +312,22 @@ export function ScoutView({ roles }: { roles: Role[] }) {
 export function RequestsView({ onRead }: { onRead: () => Promise<void> }) {
   const [direction, setDirection] = useState<"received" | "sent">("received")
   const [items, setItems] = useState<ScoutRequestSummary[]>([])
-  const load = useCallback(
-    () =>
-      request<ScoutRequestSummary[]>(`/v1/scout/requests?direction=${direction}`).then(
-        async (next) => {
-          setItems(next)
-          await onRead()
-        },
-      ),
-    [direction, onRead],
-  )
+  const [loadError, setLoadError] = useState<string>()
+  const [status, setStatus] = useState<"error" | "loading" | "ready">("loading")
+  const load = useCallback(async () => {
+    setLoadError(undefined)
+    setStatus("loading")
+    try {
+      const next = await request<ScoutRequestSummary[]>(`/v1/scout/requests?direction=${direction}`)
+      setItems(next)
+      await onRead()
+      setStatus("ready")
+    } catch (error) {
+      setItems([])
+      setLoadError(errorMessage(error, "제안을 불러오지 못했어요."))
+      setStatus("error")
+    }
+  }, [direction, onRead])
   useEffect(() => {
     void load()
   }, [load])
@@ -327,43 +358,54 @@ export function RequestsView({ onRead }: { onRead: () => Promise<void> }) {
         </Button>
       </div>
       <div className="mt-5 grid gap-3">
-        {items.map((item) => (
-          <Card key={item.id} className="rounded-2xl p-5 shadow-none">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm text-muted-foreground">
-                  {item.user.nickname} · {item.requestedRole.name}
+        {status === "loading" ? <LoadingPanel label="제안을 불러오는 중" /> : null}
+        {status === "error" ? (
+          <ErrorPanel
+            message={loadError ?? "제안을 불러오지 못했어요."}
+            retry={() => void load()}
+          />
+        ) : null}
+        {status === "ready"
+          ? items.map((item) => (
+              <Card key={item.id} className="rounded-2xl p-5 shadow-none">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm text-muted-foreground">
+                      {item.user.nickname} · {item.requestedRole.name}
+                    </p>
+                    <h2 className="mt-1 font-extrabold">{item.projectTitle}</h2>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {item.isUnread ? <Badge>새 제안</Badge> : null}
+                    <Badge variant="secondary">{item.status}</Badge>
+                  </div>
+                </div>
+                <p className="mt-3 text-sm leading-6">{item.projectSummary}</p>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  “{item.sourcePortfolio.title}” 프로젝트를 보고 제안했어요.
                 </p>
-                <h2 className="mt-1 font-extrabold">{item.projectTitle}</h2>
-              </div>
-              <div className="flex items-center gap-2">
-                {item.isUnread ? <Badge>새 제안</Badge> : null}
-                <Badge variant="secondary">{item.status}</Badge>
-              </div>
-            </div>
-            <p className="mt-3 text-sm leading-6">{item.projectSummary}</p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              “{item.sourcePortfolio.title}” 프로젝트를 보고 제안했어요.
-            </p>
-            {item.status === "pending" ? (
-              <div className="mt-4 flex gap-2">
-                {direction === "received" ? (
-                  <>
-                    <Button onClick={() => transition(item.id, "accept")}>수락</Button>
-                    <Button variant="outline" onClick={() => transition(item.id, "decline")}>
-                      거절
-                    </Button>
-                  </>
-                ) : (
-                  <Button variant="outline" onClick={() => transition(item.id, "cancel")}>
-                    취소
-                  </Button>
-                )}
-              </div>
-            ) : null}
-          </Card>
-        ))}
-        {items.length === 0 ? <ErrorPanel message="아직 제안이 없어요." /> : null}
+                {item.status === "pending" ? (
+                  <div className="mt-4 flex gap-2">
+                    {direction === "received" ? (
+                      <>
+                        <Button onClick={() => transition(item.id, "accept")}>수락</Button>
+                        <Button variant="outline" onClick={() => transition(item.id, "decline")}>
+                          거절
+                        </Button>
+                      </>
+                    ) : (
+                      <Button variant="outline" onClick={() => transition(item.id, "cancel")}>
+                        취소
+                      </Button>
+                    )}
+                  </div>
+                ) : null}
+              </Card>
+            ))
+          : null}
+        {status === "ready" && items.length === 0 ? (
+          <ErrorPanel message="아직 제안이 없어요." />
+        ) : null}
       </div>
     </div>
   )

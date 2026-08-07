@@ -47,6 +47,28 @@ bun run deploy:web
 
 `db:deploy`는 미적용 D1 migration만 production `scouty-edge`에 적용한다. 역할 taxonomy는 migration에 포함되므로 별도 seed가 없다. API가 성공한 뒤 기존 `scouty-web` Pages Direct Upload 프로젝트를 갱신하며 `greeney.life` custom domain 연결은 유지한다.
 
+브라우저의 presigned R2 업로드가 동작하려면 버킷 CORS 정책도 배포되어 있어야 한다.
+
+```powershell
+bun run r2:cors:deploy
+```
+
+## 개발·데모 데이터 초기화
+
+시드는 일반 배포나 CI에서 자동 실행하지 않는다. 로컬 D1/R2를 현실적인 데모 데이터로 초기화할 때만 아래 명령을 사용한다.
+
+```powershell
+bun run db:seed
+```
+
+프로덕션 초기화는 기존 사용자·세션·프로젝트를 모두 삭제하는 운영 명령이다. 명시적인 확인 인자가 없으면 실행되지 않으며, 삭제 전에 현재 D1을 운영체제 임시 폴더의 SQL 파일로 자동 백업한다.
+
+```powershell
+bun scripts/seed-d1.ts --remote --confirm-reset=scouty-edge
+```
+
+스크립트는 R2 데모 커버를 먼저 업로드하고, 백업이 성공한 경우에만 D1을 초기화한다. 완료 후 사용자·공개 프로젝트·탐색 projection 개수를 출력한다.
+
 ## 배포 확인
 
 ```powershell

@@ -24,6 +24,7 @@ export function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreat
     if (!(pdf instanceof File) || pdf.size === 0) return
     setIsSubmitting(true)
     setError(undefined)
+    let portfolioId: string | undefined
     try {
       const videoDurationSeconds =
         video instanceof File && video.size > 0 ? await readVideoDuration(video) : null
@@ -48,6 +49,7 @@ export function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreat
             : {}),
         }),
       })
+      portfolioId = ticket.portfolioId
       for (const upload of ticket.uploads) {
         const file = upload.kind === "pdf" ? pdf : video
         if (!(file instanceof File)) continue
@@ -58,6 +60,11 @@ export function PortfolioUploader({ roles, onCreated }: { roles: Role[]; onCreat
       setSelectedRoles([])
       onCreated()
     } catch (caught) {
+      if (portfolioId) {
+        await request(`/v1/me/portfolios/${portfolioId}/uploads`, { method: "DELETE" }).catch(
+          () => undefined,
+        )
+      }
       setError(errorMessage(caught, "프로젝트를 등록하지 못했어요."))
     } finally {
       setIsSubmitting(false)

@@ -309,6 +309,15 @@ export function createCoreRoutes(options: CoreRouteOptions) {
       },
       { params: idParams, detail: { summary: "프로젝트 업로드 완료", tags: ["Portfolio"] } },
     )
+    .delete(
+      "/v1/me/portfolios/:id/uploads",
+      async ({ params, request }) => {
+        const user = await requireUser(request, options)
+        await getCore(options).cancelPortfolioUpload(user.id, params.id)
+        return { ok: true }
+      },
+      { params: idParams, detail: { summary: "프로젝트 업로드 취소", tags: ["Portfolio"] } },
+    )
     .post(
       "/v1/me/portfolios/:id/pdf-replacements",
       async ({ body, params, request }) => {

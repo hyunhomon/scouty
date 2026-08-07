@@ -219,6 +219,7 @@ export interface CoreService {
     input: CompletePortfolioProcessingInput,
   ): Promise<void>
   confirmPortfolioUpload(userId: string, portfolioId: string): Promise<void>
+  cancelPortfolioUpload(userId: string, portfolioId: string): Promise<void>
   confirmPortfolioPdfReplacement(
     userId: string,
     portfolioId: string,

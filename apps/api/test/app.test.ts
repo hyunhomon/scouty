@@ -61,6 +61,7 @@ describe("OpenAPI reference", () => {
     expect(specification.paths).toHaveProperty("/v1/chat/rooms/{id}/messages")
     expect(specification.paths).toHaveProperty("/v1/me/unread-counts")
     expect(specification.paths).toHaveProperty("/v1/me/account")
+    expect(specification.paths).toHaveProperty("/v1/me/portfolios/{id}/uploads")
     expect(specification.paths).toHaveProperty("/v1/analytics/events")
   })
 })
