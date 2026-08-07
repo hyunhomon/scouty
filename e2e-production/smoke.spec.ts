@@ -5,7 +5,7 @@ test("anonymous production journey reaches discovery and Google sign-in", async 
   await expect(page.getByRole("heading", { level: 1, name: /스펙보다 결과물로/ })).toBeVisible()
   await expect(page.getByText("API 확인 중")).toHaveCount(0)
 
-  await page.getByRole("link", { name: "둘러보기" }).click()
+  await page.getByRole("link", { name: "둘러보기", exact: true }).click()
   await expect(page).toHaveURL(/\/feed\/?$/)
   await expect(page.getByRole("button", { name: "백엔드" })).toBeVisible()
 
