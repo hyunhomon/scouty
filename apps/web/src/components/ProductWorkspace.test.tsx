@@ -1,9 +1,10 @@
 import { render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { ProductWorkspace } from "./ProductWorkspace"
+import { ProductWorkspace, PublicProfileRoute } from "./ProductWorkspace"
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  window.history.replaceState({}, "", "/")
 })
 
 describe("ProductWorkspace", () => {
@@ -96,5 +97,53 @@ describe("ProductWorkspace", () => {
     expect(await screen.findByText("게시 준비 완료")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "게시" })).toBeInTheDocument()
     expect(screen.queryByRole("link", { name: "상세 보기" })).not.toBeInTheDocument()
+  })
+})
+
+describe("PublicProfileRoute", () => {
+  it("does not offer block or report actions on the viewer's own profile", async () => {
+    window.history.replaceState({}, "", "/profiles/owner")
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname
+        if (path === "/v1/auth/session") {
+          return Response.json({
+            id: "user-1",
+            email: "owner@example.com",
+            isProfileComplete: true,
+          })
+        }
+        if (path === "/v1/profiles/owner") {
+          return Response.json({
+            avatarUrl: null,
+            bio: "제품을 만드는 사람입니다.",
+            communicationPreference: null,
+            handle: "owner",
+            nickname: "owner",
+            portfolios: [],
+            roles: [],
+            scoutStatus: "selective",
+            stats: {
+              averageResponseSeconds: null,
+              mannerEvaluationCount: 0,
+              mannerTemperature: 36.5,
+              responseCount: 0,
+              responseEligibleCount: 0,
+              scoutReceivedCount: 0,
+              scoutSentCount: 0,
+            },
+            userId: "user-1",
+          })
+        }
+        return new Response(null, { status: 404 })
+      }),
+    )
+
+    render(<PublicProfileRoute />)
+
+    expect(await screen.findByRole("heading", { name: "owner" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "차단" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "신고" })).not.toBeInTheDocument()
   })
 })
