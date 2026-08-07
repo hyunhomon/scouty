@@ -551,7 +551,7 @@ export class PrismaCoreService implements CoreService {
   async getPublicProfile(handleValue: string) {
     const profile = await this.dependencies.database.userProfile.findFirst({
       where: {
-        handle: { equals: normalizeHandle(handleValue), mode: "insensitive" },
+        handle: { equals: normalizeHandle(handleValue) },
         profileCompletedAt: { not: null },
         user: { status: UserStatus.ACTIVE },
       },
