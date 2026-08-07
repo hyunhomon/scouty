@@ -67,6 +67,16 @@ describe("DiscoveryFeed", () => {
     expect(await screen.findByText("조건에 맞는 프로젝트가 아직 없어요")).toBeInTheDocument()
   })
 
+  it("leads an empty marketplace to the first project flow", async () => {
+    render(<DiscoveryFeed client={createClient(async () => ({ items: [], nextCursor: null }))} />)
+
+    expect(await screen.findByText("아직 공개된 프로젝트가 없어요")).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "첫 프로젝트 등록하기" })).toHaveAttribute(
+      "href",
+      "/me",
+    )
+  })
+
   it("offers a retry after a feed request fails", async () => {
     const listPortfolios = vi
       .fn<DiscoveryFeedClient["listPortfolios"]>()

@@ -360,13 +360,25 @@ export function DiscoveryFeed({ client = defaultClient }: { client?: DiscoveryFe
 
       {status === "ready" && portfolios.length === 0 ? (
         <div className="rounded-2xl border bg-card px-5 py-12 text-center">
-          <h2 className="text-lg font-bold">조건에 맞는 프로젝트가 아직 없어요</h2>
-          <p className="mt-2 text-sm text-muted-foreground">다른 역할이나 검색어로 둘러보세요.</p>
+          <h2 className="text-lg font-bold">
+            {selectedRole || searchQuery
+              ? "조건에 맞는 프로젝트가 아직 없어요"
+              : "아직 공개된 프로젝트가 없어요"}
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {selectedRole || searchQuery
+              ? "다른 역할이나 검색어로 둘러보세요."
+              : "첫 프로젝트를 등록하고 함께할 사람을 만나보세요."}
+          </p>
           {selectedRole || searchQuery ? (
             <Button type="button" variant="outline" className="mt-5" onClick={resetFilters}>
               필터 초기화
             </Button>
-          ) : null}
+          ) : (
+            <Button asChild className="mt-5">
+              <a href="/me">첫 프로젝트 등록하기</a>
+            </Button>
+          )}
         </div>
       ) : null}
 

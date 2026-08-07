@@ -172,7 +172,8 @@ export function createCoreRoutes(options: CoreRouteOptions) {
       "/v1/auth/session",
       async ({ request }) => {
         const token = parseSessionToken(request.headers.get("cookie"))
-        return token ? getCore(options).resolveSession(token) : null
+        const session = token ? await getCore(options).resolveSession(token) : null
+        return Response.json(session)
       },
       { detail: { summary: "현재 로그인 세션", tags: ["Auth"] } },
     )

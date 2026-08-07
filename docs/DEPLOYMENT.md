@@ -53,9 +53,16 @@ bun run deploy:web
 curl.exe --fail https://api.greeney.life/ready
 curl.exe --fail https://api.greeney.life/docs
 curl.exe --fail https://greeney.life
+bun run test:smoke:production
 ```
 
-`/ready`는 D1 canonical schema, R2, OAuth, R2 signing, Queue가 모두 준비된 경우에만 `200`을 반환한다.
+`/ready`는 D1 canonical schema, R2, OAuth, R2 signing, Queue가 모두 준비된 경우에만 `200`을 반환한다. 운영 스모크 테스트는 실제 `greeney.life`를 열어 랜딩 → 피드 → 로그인 경계가 이어지는지, 비로그인 세션이 JSON `null`로 응답하는지, 보호 API가 `401`을 유지하는지 확인한다. 상태 코드만 보고 배포 완료로 판단하지 않는다.
+
+최초 Google 로그인 후에는 D1에 사용자·프로필·세션이 생성됐는지 읽기 전용으로 확인한다.
+
+```powershell
+bunx wrangler d1 execute scouty-edge --remote --config apps/api/wrangler.jsonc --command "SELECT COUNT(*) AS user_count FROM users; SELECT COUNT(*) AS profile_count FROM user_profiles; SELECT COUNT(*) AS session_count FROM sessions;"
+```
 
 ## 복구
 
