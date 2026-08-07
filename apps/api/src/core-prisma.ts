@@ -128,6 +128,39 @@ function staggerCandidates(candidates: ScoutCandidate[]) {
 export class PrismaCoreService implements CoreService {
   constructor(private readonly dependencies: CoreDependencies) {}
 
+  private uploadTarget(assetId: string, mimeType: string) {
+    return {
+      headers: { "content-type": mimeType },
+      url: `${this.dependencies.apiOrigin}/v1/me/uploads/${assetId}`,
+    }
+  }
+
+  private async pendingUploadAsset(userId: string, assetId: string) {
+    const asset = await this.dependencies.database.asset.findFirst({
+      where: {
+        createdAt: { gte: new Date(Date.now() - 15 * 60 * 1000) },
+        id: assetId,
+        ownerId: userId,
+        status: AssetStatus.UPLOADING,
+      },
+    })
+    if (!asset) {
+      throw new ApiError(404, "UPLOAD_NOT_FOUND", "유효한 업로드 요청을 찾을 수 없어요.")
+    }
+    return asset
+  }
+
+  private assertUploadContentType(expected: string, contentType: string | null) {
+    const normalizedContentType = contentType?.split(";", 1)[0]?.trim().toLowerCase()
+    if (normalizedContentType !== expected) {
+      throw new ApiError(
+        415,
+        "INVALID_UPLOAD_TYPE",
+        "요청한 파일 형식과 실제 업로드 형식이 달라요.",
+      )
+    }
+  }
+
   private track(event: ProductEvent) {
     try {
       this.dependencies.track?.(event)
@@ -500,6 +533,120 @@ export class PrismaCoreService implements CoreService {
     return portfolios.map(mapPortfolio)
   }
 
+  async uploadAsset(
+    userId: string,
+    assetId: string,
+    body: ReadableStream<Uint8Array> | null,
+    contentType: string | null,
+  ) {
+    if (!body) {
+      throw new ApiError(400, "EMPTY_UPLOAD", "업로드할 파일이 비어 있어요.")
+    }
+
+    const asset = await this.pendingUploadAsset(userId, assetId)
+    this.assertUploadContentType(asset.mimeType, contentType)
+
+    let object: R2Object
+    try {
+      object = await this.dependencies.assets.put(asset.storageKey, body, {
+        httpMetadata: { contentType: asset.mimeType },
+      })
+    } catch (error) {
+      console.error("R2 binding upload failed", { assetId, error })
+      throw new ApiError(
+        502,
+        "ASSET_UPLOAD_FAILED",
+        "파일 저장소에 업로드하지 못했어요. 다시 시도해 주세요.",
+      )
+    }
+
+    if (object.size !== Number(asset.byteSize)) {
+      await this.dependencies.assets.delete(asset.storageKey).catch(() => undefined)
+      throw new ApiError(400, "UPLOAD_SIZE_MISMATCH", "선택한 파일의 크기가 업로드 요청과 달라요.")
+    }
+  }
+
+  async createMultipartAssetUpload(userId: string, assetId: string) {
+    const asset = await this.pendingUploadAsset(userId, assetId)
+    try {
+      const upload = await this.dependencies.assets.createMultipartUpload(asset.storageKey, {
+        httpMetadata: { contentType: asset.mimeType },
+      })
+      return { uploadId: upload.uploadId }
+    } catch (error) {
+      console.error("R2 multipart upload creation failed", { assetId, error })
+      throw new ApiError(502, "ASSET_UPLOAD_FAILED", "대용량 파일 업로드를 시작하지 못했어요.")
+    }
+  }
+
+  async uploadAssetPart(
+    userId: string,
+    assetId: string,
+    uploadId: string,
+    partNumber: number,
+    body: ReadableStream<Uint8Array> | null,
+    contentType: string | null,
+  ) {
+    if (!body) throw new ApiError(400, "EMPTY_UPLOAD", "업로드할 파일 조각이 비어 있어요.")
+    if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10_000) {
+      throw new ApiError(400, "INVALID_UPLOAD_PART", "파일 조각 번호가 올바르지 않아요.")
+    }
+
+    const asset = await this.pendingUploadAsset(userId, assetId)
+    this.assertUploadContentType(asset.mimeType, contentType)
+    try {
+      const part = await this.dependencies.assets
+        .resumeMultipartUpload(asset.storageKey, uploadId)
+        .uploadPart(partNumber, body)
+      return { etag: part.etag, partNumber: part.partNumber }
+    } catch (error) {
+      console.error("R2 multipart part upload failed", { assetId, error, partNumber })
+      throw new ApiError(502, "ASSET_UPLOAD_FAILED", "파일 조각을 업로드하지 못했어요.")
+    }
+  }
+
+  async completeMultipartAssetUpload(
+    userId: string,
+    assetId: string,
+    uploadId: string,
+    parts: Array<{ etag: string; partNumber: number }>,
+  ) {
+    const asset = await this.pendingUploadAsset(userId, assetId)
+    const orderedParts = [...parts].sort((left, right) => left.partNumber - right.partNumber)
+    const hasInvalidParts =
+      orderedParts.length < 1 ||
+      orderedParts.length > 10_000 ||
+      orderedParts.some(
+        (part, index) => part.partNumber !== index + 1 || !part.etag || part.etag.length > 256,
+      )
+    if (hasInvalidParts) {
+      throw new ApiError(400, "INVALID_UPLOAD_PARTS", "완료할 파일 조각 정보가 올바르지 않아요.")
+    }
+
+    let object: R2Object
+    try {
+      object = await this.dependencies.assets
+        .resumeMultipartUpload(asset.storageKey, uploadId)
+        .complete(orderedParts)
+    } catch (error) {
+      console.error("R2 multipart upload completion failed", { assetId, error })
+      throw new ApiError(502, "ASSET_UPLOAD_FAILED", "대용량 파일 업로드를 완료하지 못했어요.")
+    }
+    if (object.size !== Number(asset.byteSize)) {
+      await this.dependencies.assets.delete(asset.storageKey).catch(() => undefined)
+      throw new ApiError(400, "UPLOAD_SIZE_MISMATCH", "선택한 파일의 크기가 업로드 요청과 달라요.")
+    }
+  }
+
+  async abortMultipartAssetUpload(userId: string, assetId: string, uploadId: string) {
+    const asset = await this.pendingUploadAsset(userId, assetId)
+    try {
+      await this.dependencies.assets.resumeMultipartUpload(asset.storageKey, uploadId).abort()
+    } catch (error) {
+      console.error("R2 multipart upload abort failed", { assetId, error })
+    }
+  }
+
   async createAvatarUpload(
     userId: string,
     input: { byteSize: number; mimeType: "image/jpeg" | "image/png" | "image/webp" },
@@ -521,7 +668,7 @@ export class PrismaCoreService implements CoreService {
         storageKey,
       },
     })
-    const upload = await this.dependencies.signer.signPut(storageKey, input.mimeType)
+    const upload = this.uploadTarget(assetId, input.mimeType)
     return {
       assetId,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
@@ -633,15 +780,12 @@ export class PrismaCoreService implements CoreService {
     })
 
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000)
-    const pdfUpload = await this.dependencies.signer.signPut(pdfStorageKey, input.pdf.mimeType)
+    const pdfUpload = this.uploadTarget(pdfAssetId, input.pdf.mimeType)
     const uploads: PortfolioUploadTicket["uploads"] = [
       { assetId: pdfAssetId, headers: pdfUpload.headers, kind: "pdf", url: pdfUpload.url },
     ]
     if (input.video && videoAssetId && videoStorageKey) {
-      const videoUpload = await this.dependencies.signer.signPut(
-        videoStorageKey,
-        input.video.mimeType,
-      )
+      const videoUpload = this.uploadTarget(videoAssetId, input.video.mimeType)
       uploads.push({
         assetId: videoAssetId,
         headers: videoUpload.headers,
@@ -710,7 +854,7 @@ export class PrismaCoreService implements CoreService {
 
     const assetId = crypto.randomUUID()
     const storageKey = `users/${userId}/portfolios/${portfolioId}/replacements/${assetId}/source.pdf`
-    const upload = await this.dependencies.signer.signPut(storageKey, input.mimeType)
+    const upload = this.uploadTarget(assetId, input.mimeType)
     await this.dependencies.database.$transaction([
       this.dependencies.database.asset.create({
         data: {
@@ -841,7 +985,7 @@ export class PrismaCoreService implements CoreService {
           ? "mov"
           : "mp4"
     const storageKey = `users/${userId}/portfolios/${portfolioId}/replacements/${assetId}/video.${extension}`
-    const upload = await this.dependencies.signer.signPut(storageKey, input.mimeType)
+    const upload = this.uploadTarget(assetId, input.mimeType)
     await this.dependencies.database.$transaction([
       this.dependencies.database.asset.create({
         data: {
@@ -2002,7 +2146,7 @@ export class PrismaCoreService implements CoreService {
         storageKey,
       },
     })
-    const upload = await this.dependencies.signer.signPut(storageKey, input.mimeType)
+    const upload = this.uploadTarget(assetId, input.mimeType)
     return {
       assetId,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),

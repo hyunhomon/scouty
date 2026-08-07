@@ -6,7 +6,12 @@ const databaseValues = vi.hoisted(() => ({
     PORTFOLIO_PAGE: "PORTFOLIO_PAGE",
     PORTFOLIO_THUMBNAIL: "PORTFOLIO_THUMBNAIL",
   },
-  AssetStatus: { DELETED: "DELETED", FAILED: "FAILED", READY: "READY" },
+  AssetStatus: {
+    DELETED: "DELETED",
+    FAILED: "FAILED",
+    READY: "READY",
+    UPLOADING: "UPLOADING",
+  },
   NotificationType: { PORTFOLIO_PROCESSING_COMPLETED: "PORTFOLIO_PROCESSING_COMPLETED" },
   PortfolioStatus: {
     ARCHIVED: "ARCHIVED",
@@ -139,6 +144,69 @@ describe("PrismaCoreService profile completion", () => {
       }),
     )
     expect(profile?.handle).toBe("hyunhomon")
+  })
+})
+
+describe("PrismaCoreService asset uploads", () => {
+  it("streams an authenticated upload through the R2 binding", async () => {
+    const put = vi.fn(async () => ({ size: 4 }))
+    const body = new Blob(["test"]).stream()
+    const service = new PrismaCoreService({
+      apiOrigin: "https://api.greeney.life",
+      assets: { put } as unknown as R2Bucket,
+      database: {
+        asset: {
+          findFirst: vi.fn(async () => ({
+            byteSize: 4n,
+            mimeType: "image/png",
+            storageKey: "users/user-1/avatar.png",
+          })),
+        },
+      } as never,
+      edgeDatabase: {} as D1Database,
+      processingQueue: {} as Queue<{ portfolioId: string; requestedAt: string }>,
+      signer: {
+        signGet: vi.fn(async () => "https://assets.example/file"),
+        signPut: vi.fn(async () => ({ headers: {}, url: "https://assets.example/file" })),
+      },
+    })
+
+    await service.uploadAsset("user-1", "asset-1", body, "image/png")
+
+    expect(put).toHaveBeenCalledWith("users/user-1/avatar.png", body, {
+      httpMetadata: { contentType: "image/png" },
+    })
+  })
+
+  it("deletes a partial object when the uploaded byte size does not match", async () => {
+    const deleteObject = vi.fn(async () => undefined)
+    const service = new PrismaCoreService({
+      apiOrigin: "https://api.greeney.life",
+      assets: {
+        delete: deleteObject,
+        put: vi.fn(async () => ({ size: 4 })),
+      } as unknown as R2Bucket,
+      database: {
+        asset: {
+          findFirst: vi.fn(async () => ({
+            byteSize: 5n,
+            mimeType: "application/pdf",
+            storageKey: "users/user-1/source.pdf",
+          })),
+        },
+      } as never,
+      edgeDatabase: {} as D1Database,
+      processingQueue: {} as Queue<{ portfolioId: string; requestedAt: string }>,
+      signer: {
+        signGet: vi.fn(async () => "https://assets.example/file"),
+        signPut: vi.fn(async () => ({ headers: {}, url: "https://assets.example/file" })),
+      },
+    })
+
+    await expect(
+      service.uploadAsset("user-1", "asset-1", new Blob(["test"]).stream(), "application/pdf"),
+    ).rejects.toMatchObject({ code: "UPLOAD_SIZE_MISMATCH", status: 400 })
+    expect(deleteObject).toHaveBeenCalledWith("users/user-1/source.pdf")
   })
 })
 

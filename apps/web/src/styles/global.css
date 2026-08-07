@@ -85,6 +85,12 @@ body {
   background: color-mix(in oklab, var(--primary) 22%, transparent);
 }
 
+/* Radix positions select content inside this wrapper, so the wrapper must own the top layer. */
+[data-radix-popper-content-wrapper] {
+  /* biome-ignore lint/complexity/noImportantStyles: Radix writes an inline z-index on this generated wrapper. */
+  z-index: 2147483647 !important;
+}
+
 .hero-glow {
   position: absolute;
   inset: -18rem 50% auto auto;

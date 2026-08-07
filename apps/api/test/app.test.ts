@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest"
-import { createApp, parseCorsOrigins } from "../src/app"
+import { describe, expect, it, vi } from "vitest"
+import { type CoreService, createApp, parseCorsOrigins } from "../src/app"
 
 describe("API health", () => {
   it("reports liveness", async () => {
@@ -62,6 +62,8 @@ describe("OpenAPI reference", () => {
     expect(specification.paths).toHaveProperty("/v1/me/unread-counts")
     expect(specification.paths).toHaveProperty("/v1/me/account")
     expect(specification.paths).toHaveProperty("/v1/me/portfolios/{id}/uploads")
+    expect(specification.paths).toHaveProperty("/v1/me/uploads/{id}")
+    expect(specification.paths).toHaveProperty("/v1/me/uploads/{id}/multipart")
     expect(specification.paths).toHaveProperty("/v1/analytics/events")
   })
 })
@@ -98,5 +100,36 @@ describe("API security boundary", () => {
 
     expect(response.status).toBe(403)
     await expect(response.json()).resolves.toMatchObject({ code: "INVALID_ORIGIN" })
+  })
+
+  it("passes an authenticated upload stream to the core service", async () => {
+    const uploadAsset = vi.fn(async () => undefined)
+    const core = {
+      resolveSession: vi.fn(async () => ({
+        email: "maker@example.com",
+        id: "user-1",
+        isProfileComplete: true,
+      })),
+      uploadAsset,
+    } as unknown as CoreService
+    const app = createApp({
+      aot: false,
+      core,
+      corsOrigins: "https://greeney.life",
+    })
+    const response = await app.handle(
+      new Request("https://api.greeney.life/v1/me/uploads/asset-1", {
+        body: new Blob(["test"], { type: "image/png" }),
+        headers: {
+          "content-type": "image/png",
+          cookie: "scouty_session=session-token",
+          origin: "https://greeney.life",
+        },
+        method: "PUT",
+      }),
+    )
+
+    expect(response.status).toBe(204)
+    expect(uploadAsset).toHaveBeenCalledWith("user-1", "asset-1", expect.anything(), "image/png")
   })
 })

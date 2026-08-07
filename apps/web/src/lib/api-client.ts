@@ -2,6 +2,8 @@ import { apiUrl } from "@/lib/api"
 
 const RETRY_DELAYS_MS = [150, 400]
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
+const MULTIPART_THRESHOLD_BYTES = 50 * 1024 * 1024
+const MULTIPART_PART_BYTES = 10 * 1024 * 1024
 
 export class ApiRequestError extends Error {
   constructor(
@@ -86,10 +88,10 @@ export async function request<T>(path: string, init?: RequestInit) {
   return responseBody as T
 }
 
-export async function uploadFile(url: string, file: File, headers: HeadersInit, label = "파일") {
+async function uploadRequest(url: string, init: RequestInit, label: string) {
   let response: Response
   try {
-    response = await fetch(url, { body: file, headers, method: "PUT" })
+    response = await fetch(url, { ...init, credentials: "include" })
   } catch (error) {
     throw new ApiRequestError(
       0,
@@ -99,8 +101,78 @@ export async function uploadFile(url: string, file: File, headers: HeadersInit, 
   }
 
   if (!response.ok) {
-    throw new ApiRequestError(response.status, `${label} 업로드에 실패했어요.`)
+    let message = `${label} 업로드에 실패했어요.`
+    try {
+      const body = (await response.json()) as { message?: string }
+      if (body.message) message = body.message
+    } catch {
+      // R2 and edge errors may not include a JSON response.
+    }
+    throw new ApiRequestError(response.status, message)
   }
+  return response
+}
+
+async function uploadMultipart(url: string, file: File, headers: HeadersInit, label: string) {
+  const multipartUrl = `${url}/multipart`
+  const startResponse = await uploadRequest(multipartUrl, { method: "POST" }, label)
+  const start = (await startResponse.json()) as { uploadId?: string }
+  if (!start.uploadId) {
+    throw new ApiRequestError(502, `${label} 업로드를 시작하지 못했어요.`)
+  }
+
+  const uploadedParts: Array<{ etag: string; partNumber: number }> = []
+  try {
+    const partCount = Math.ceil(file.size / MULTIPART_PART_BYTES)
+    for (let index = 0; index < partCount; index += 1) {
+      const partNumber = index + 1
+      const partUrl = new URL(multipartUrl)
+      partUrl.searchParams.set("uploadId", start.uploadId)
+      partUrl.searchParams.set("partNumber", String(partNumber))
+      const part = file.slice(
+        index * MULTIPART_PART_BYTES,
+        Math.min((index + 1) * MULTIPART_PART_BYTES, file.size),
+        file.type,
+      )
+      const partResponse = await uploadRequest(
+        partUrl.toString(),
+        { body: part, headers, method: "PUT" },
+        label,
+      )
+      const uploadedPart = (await partResponse.json()) as {
+        etag?: string
+        partNumber?: number
+      }
+      if (!uploadedPart.etag || uploadedPart.partNumber !== partNumber) {
+        throw new ApiRequestError(502, `${label} 업로드 응답을 확인하지 못했어요.`)
+      }
+      uploadedParts.push({ etag: uploadedPart.etag, partNumber })
+    }
+
+    await uploadRequest(
+      `${multipartUrl}/complete`,
+      {
+        body: JSON.stringify({ parts: uploadedParts, uploadId: start.uploadId }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+      label,
+    )
+  } catch (error) {
+    const abortUrl = new URL(multipartUrl)
+    abortUrl.searchParams.set("uploadId", start.uploadId)
+    await fetch(abortUrl, { credentials: "include", method: "DELETE" }).catch(() => undefined)
+    throw error
+  }
+}
+
+export async function uploadFile(url: string, file: File, headers: HeadersInit, label = "파일") {
+  if (file.size > MULTIPART_THRESHOLD_BYTES) {
+    await uploadMultipart(url, file, headers, label)
+    return
+  }
+
+  await uploadRequest(url, { body: file, headers, method: "PUT" }, label)
 }
 
 export function errorMessage(error: unknown, fallback: string) {

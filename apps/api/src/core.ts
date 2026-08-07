@@ -231,6 +231,28 @@ export interface CoreService {
     assetId: string,
   ): Promise<void>
   confirmAvatarUpload(userId: string, assetId: string): Promise<void>
+  uploadAsset(
+    userId: string,
+    assetId: string,
+    body: ReadableStream<Uint8Array> | null,
+    contentType: string | null,
+  ): Promise<void>
+  createMultipartAssetUpload(userId: string, assetId: string): Promise<{ uploadId: string }>
+  uploadAssetPart(
+    userId: string,
+    assetId: string,
+    uploadId: string,
+    partNumber: number,
+    body: ReadableStream<Uint8Array> | null,
+    contentType: string | null,
+  ): Promise<{ etag: string; partNumber: number }>
+  completeMultipartAssetUpload(
+    userId: string,
+    assetId: string,
+    uploadId: string,
+    parts: Array<{ etag: string; partNumber: number }>,
+  ): Promise<void>
+  abortMultipartAssetUpload(userId: string, assetId: string, uploadId: string): Promise<void>
   createAvatarUpload(
     userId: string,
     input: { byteSize: number; mimeType: "image/jpeg" | "image/png" | "image/webp" },
@@ -333,7 +355,7 @@ export interface CoreService {
 
 export class ApiError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 415 | 429 | 503,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 415 | 429 | 502 | 503,
     readonly code: string,
     message: string,
   ) {
