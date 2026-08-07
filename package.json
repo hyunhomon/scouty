@@ -21,6 +21,9 @@
     "db:generate": "bun run --filter '@scouty/db' generate",
     "db:migrate": "wrangler d1 migrations apply scouty-edge --local --config apps/api/wrangler.jsonc",
     "db:deploy": "wrangler d1 migrations apply scouty-edge --remote --config apps/api/wrangler.jsonc",
+    "db:seed": "bun scripts/seed-d1.ts",
+    "db:seed:production": "bun scripts/seed-d1.ts --remote",
+    "r2:cors:deploy": "wrangler r2 bucket cors set scouty --config apps/api/wrangler.jsonc --file apps/api/r2-cors.json --force",
     "cf:typegen": "bun run --filter '@scouty/api' cf:typegen",
     "deploy:web": "bun run --filter '@scouty/web' deploy",
     "deploy:api": "bun run --filter '@scouty/api' deploy"

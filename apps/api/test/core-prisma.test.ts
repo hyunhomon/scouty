@@ -10,6 +10,7 @@ const databaseValues = vi.hoisted(() => ({
   NotificationType: { PORTFOLIO_PROCESSING_COMPLETED: "PORTFOLIO_PROCESSING_COMPLETED" },
   PortfolioStatus: {
     ARCHIVED: "ARCHIVED",
+    DRAFT: "DRAFT",
     PROCESSING: "PROCESSING",
     PUBLISHED: "PUBLISHED",
     READY: "READY",
@@ -142,6 +143,66 @@ describe("PrismaCoreService profile completion", () => {
 })
 
 describe("PrismaCoreService portfolio lifecycle", () => {
+  it("removes an abandoned draft and its uploaded assets", async () => {
+    const portfolioDelete = vi.fn(async () => undefined)
+    const assetUpdateMany = vi.fn(async () => undefined)
+    const tagUpdateMany = vi.fn(async () => undefined)
+    const purgeUpdateMany = vi.fn(async () => undefined)
+    const assetsDelete = vi.fn(async () => undefined)
+    const transaction = {
+      asset: { updateMany: assetUpdateMany },
+      portfolio: { delete: portfolioDelete },
+      tag: { updateMany: tagUpdateMany },
+    }
+    const database = {
+      $transaction: vi.fn(async (operation: (client: typeof transaction) => Promise<void>) =>
+        operation(transaction),
+      ),
+      asset: {
+        findMany: vi.fn(async () => [
+          { id: "pdf-1", storageKey: "users/author-1/portfolio/source.pdf" },
+          { id: "video-1", storageKey: "users/author-1/portfolio/video.mp4" },
+        ]),
+        updateMany: purgeUpdateMany,
+      },
+      portfolio: {
+        findFirst: vi.fn(async () => ({
+          pdfAssetId: "pdf-1",
+          tags: [{ tagId: "tag-1" }],
+          videoAssetId: "video-1",
+        })),
+      },
+    }
+    const service = new PrismaCoreService({
+      apiOrigin: "https://api.greeney.life",
+      assets: { delete: assetsDelete } as unknown as R2Bucket,
+      database: database as never,
+      edgeDatabase: {} as D1Database,
+      processingQueue: {} as Queue<{ portfolioId: string; requestedAt: string }>,
+      signer: {
+        signGet: vi.fn(async () => "https://assets.example/file"),
+        signPut: vi.fn(async () => ({ headers: {}, url: "https://assets.example/file" })),
+      },
+    })
+
+    await service.cancelPortfolioUpload("author-1", "portfolio-1")
+
+    expect(portfolioDelete).toHaveBeenCalledWith({ where: { id: "portfolio-1" } })
+    expect(assetUpdateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["pdf-1", "video-1"] } },
+      data: { status: databaseValues.AssetStatus.DELETED },
+    })
+    expect(tagUpdateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["tag-1"] }, usageCount: { gt: 0 } },
+      data: { usageCount: { decrement: 1 } },
+    })
+    expect(assetsDelete).toHaveBeenCalledWith([
+      "users/author-1/portfolio/source.pdf",
+      "users/author-1/portfolio/video.mp4",
+    ])
+    expect(purgeUpdateMany).toHaveBeenCalled()
+  })
+
   it("keeps processed portfolios private until the owner publishes them", async () => {
     const portfolioUpdate = vi.fn(async () => undefined)
     const notificationCreate = vi.fn(async () => undefined)

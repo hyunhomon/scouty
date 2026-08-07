@@ -14,7 +14,7 @@ import { inputClass } from "@/components/ui/form-controls"
 import { apiUrl } from "@/lib/api"
 import { errorMessage, request, uploadFile } from "@/lib/api-client"
 import { cn } from "@/lib/utils"
-import { LoadingPanel } from "./shell"
+import { ErrorPanel, LoadingPanel } from "./shell"
 import { TrustActions } from "./trust-actions"
 
 function MessageBody({ body }: { body: string }) {
@@ -351,10 +351,20 @@ export function ChatView({ onUnreadChange }: { onUnreadChange: (count: number) =
 
 export function NotificationsView() {
   const [items, setItems] = useState<NotificationSummary[]>([])
-  const load = useCallback(
-    () => request<NotificationSummary[]>("/v1/me/notifications").then(setItems),
-    [],
-  )
+  const [loadError, setLoadError] = useState<string>()
+  const [status, setStatus] = useState<"error" | "loading" | "ready">("loading")
+  const load = useCallback(async () => {
+    setLoadError(undefined)
+    setStatus("loading")
+    try {
+      setItems(await request<NotificationSummary[]>("/v1/me/notifications"))
+      setStatus("ready")
+    } catch (error) {
+      setItems([])
+      setLoadError(errorMessage(error, "알림을 불러오지 못했어요."))
+      setStatus("error")
+    }
+  }, [])
   useEffect(() => {
     void load()
   }, [load])
@@ -366,26 +376,38 @@ export function NotificationsView() {
     <div className="mx-auto max-w-2xl">
       <h1 className="text-3xl font-extrabold">알림</h1>
       <div className="mt-5 grid gap-2">
-        {items.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => read(item.id)}
-            className={cn(
-              "flex items-center justify-between rounded-2xl border bg-card p-4 text-left",
-              !item.isRead && "border-primary/40",
-            )}
-          >
-            <span className="text-sm font-semibold">
-              {notificationCopy[item.type] ?? "새로운 소식이 있어요."}
-            </span>
-            {item.isRead ? (
-              <Check aria-label="읽음" size={16} />
-            ) : (
-              <ChevronRight aria-label="읽기" size={16} />
-            )}
-          </button>
-        ))}
+        {status === "loading" ? <LoadingPanel label="알림을 불러오는 중" /> : null}
+        {status === "error" ? (
+          <ErrorPanel
+            message={loadError ?? "알림을 불러오지 못했어요."}
+            retry={() => void load()}
+          />
+        ) : null}
+        {status === "ready"
+          ? items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => read(item.id)}
+                className={cn(
+                  "flex items-center justify-between rounded-2xl border bg-card p-4 text-left",
+                  !item.isRead && "border-primary/40",
+                )}
+              >
+                <span className="text-sm font-semibold">
+                  {notificationCopy[item.type] ?? "새로운 소식이 있어요."}
+                </span>
+                {item.isRead ? (
+                  <Check aria-label="읽음" size={16} />
+                ) : (
+                  <ChevronRight aria-label="읽기" size={16} />
+                )}
+              </button>
+            ))
+          : null}
+        {status === "ready" && items.length === 0 ? (
+          <ErrorPanel message="아직 알림이 없어요." />
+        ) : null}
       </div>
     </div>
   )

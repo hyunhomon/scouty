@@ -7,6 +7,7 @@ import { inputClass } from "@/components/ui/form-controls"
 import { apiUrl } from "@/lib/api"
 import { errorMessage, request } from "@/lib/api-client"
 import { PortfolioCard, PortfolioUploader } from "./portfolio-editor"
+import { ErrorPanel, LoadingPanel } from "./shell"
 import type { Role } from "./types"
 
 export function ProfileView({ profile, roles }: { profile: ProfileSummary; roles: Role[] }) {
@@ -14,13 +15,25 @@ export function ProfileView({ profile, roles }: { profile: ProfileSummary; roles
   const [bookmarks, setBookmarks] = useState<PortfolioSummary[]>([])
   const [deleteConfirmation, setDeleteConfirmation] = useState("")
   const [deleteError, setDeleteError] = useState<string>()
+  const [loadError, setLoadError] = useState<string>()
+  const [status, setStatus] = useState<"error" | "loading" | "ready">("loading")
   const load = useCallback(async () => {
-    const [projects, saved] = await Promise.all([
-      request<PortfolioSummary[]>("/v1/me/portfolios"),
-      request<PortfolioSummary[]>("/v1/me/bookmarks"),
-    ])
-    setPortfolios(projects)
-    setBookmarks(saved)
+    setLoadError(undefined)
+    setStatus("loading")
+    try {
+      const [projects, saved] = await Promise.all([
+        request<PortfolioSummary[]>("/v1/me/portfolios"),
+        request<PortfolioSummary[]>("/v1/me/bookmarks"),
+      ])
+      setPortfolios(projects)
+      setBookmarks(saved)
+      setStatus("ready")
+    } catch (error) {
+      setPortfolios([])
+      setBookmarks([])
+      setLoadError(errorMessage(error, "프로젝트를 불러오지 못했어요."))
+      setStatus("error")
+    }
   }, [])
   useEffect(() => {
     void load()
@@ -56,29 +69,43 @@ export function ProfileView({ profile, roles }: { profile: ProfileSummary; roles
           </a>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {portfolios.map((portfolio) => (
-            <PortfolioCard
-              key={portfolio.id}
-              portfolio={portfolio}
-              roles={roles}
-              onRefresh={load}
+          {status === "loading" ? <LoadingPanel label="프로젝트를 불러오는 중" /> : null}
+          {status === "error" ? (
+            <ErrorPanel
+              message={loadError ?? "프로젝트를 불러오지 못했어요."}
+              retry={() => void load()}
             />
-          ))}
-          {portfolios.length === 0 ? (
+          ) : null}
+          {status === "ready"
+            ? portfolios.map((portfolio) => (
+                <PortfolioCard
+                  key={portfolio.id}
+                  portfolio={portfolio}
+                  roles={roles}
+                  onRefresh={load}
+                />
+              ))
+            : null}
+          {status === "ready" && portfolios.length === 0 ? (
             <p className="text-sm text-muted-foreground">아직 등록한 프로젝트가 없어요.</p>
           ) : null}
         </div>
         <h2 className="mt-10 text-xl font-extrabold">저장한 프로젝트</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {bookmarks.map((portfolio) => (
-            <a
-              key={portfolio.id}
-              href={`/portfolio?portfolio=${encodeURIComponent(portfolio.id)}`}
-              className="rounded-2xl border bg-card p-5 font-bold"
-            >
-              {portfolio.title}
-            </a>
-          ))}
+          {status === "ready"
+            ? bookmarks.map((portfolio) => (
+                <a
+                  key={portfolio.id}
+                  href={`/portfolio?portfolio=${encodeURIComponent(portfolio.id)}`}
+                  className="rounded-2xl border bg-card p-5 font-bold"
+                >
+                  {portfolio.title}
+                </a>
+              ))
+            : null}
+          {status === "ready" && bookmarks.length === 0 ? (
+            <p className="text-sm text-muted-foreground">아직 저장한 프로젝트가 없어요.</p>
+          ) : null}
         </div>
       </div>
       <div className="grid content-start gap-6">
