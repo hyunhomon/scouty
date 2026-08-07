@@ -110,7 +110,11 @@ export default {
       try {
         await core.processPortfolio(message.body.portfolioId)
         message.ack()
-      } catch {
+      } catch (error) {
+        console.error("Portfolio queue message failed", {
+          error: error instanceof Error ? error.message : String(error),
+          portfolioId: message.body.portfolioId,
+        })
         message.retry()
       }
     }

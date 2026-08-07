@@ -2549,13 +2549,17 @@ export class PrismaCoreService implements CoreService {
         ...(videoUrl ? { videoUrl } : {}),
       })
       await this.completePortfolioProcessing(portfolioId, result)
-    } catch {
+    } catch (error) {
+      console.error("Portfolio media processing failed", {
+        error: error instanceof Error ? error.message : String(error),
+        portfolioId,
+      })
       if (isReplacement) {
         await this.failReplacement(portfolioId, portfolio.authorId, "PDF_CONVERSION_FAILED")
       } else {
         await this.failProcessing(portfolioId, portfolio.authorId, "PDF_CONVERSION_FAILED")
       }
-      throw new Error("Portfolio processing failed")
+      throw new Error("Portfolio processing failed", { cause: error })
     }
   }
 

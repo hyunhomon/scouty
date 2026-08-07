@@ -2,6 +2,7 @@ import { Container } from "@cloudflare/containers"
 
 export class PortfolioMediaContainer extends Container<Cloudflare.Env> {
   override defaultPort = 8080
+  override pingEndpoint = "localhost/health"
   override sleepAfter = "5m"
 
   constructor(ctx: DurableObjectState<Record<string, never>>, env: Cloudflare.Env) {
