@@ -190,7 +190,9 @@ Bun.serve({
   port: 8080,
   async fetch(request) {
     const url = new URL(request.url)
-    if (url.pathname === "/health") return Response.json({ status: "ok" })
+    if (url.pathname === "/health" || url.pathname === "/ping") {
+      return Response.json({ status: "ok" })
+    }
     if (request.method !== "POST") {
       return new Response("Not found", { status: 404 })
     }
